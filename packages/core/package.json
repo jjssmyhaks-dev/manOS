@@ -1,0 +1,16 @@
+{
+  "name": "@factory/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./packs": "./src/packs.ts",
+    "./policy": "./src/policy.ts",
+    "./guardrails": "./src/guardrails.ts"
+  },
+  "dependencies": {
+    "@factory/db": "*",
+    "zod": "^3.24.1"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "factory-ai-os",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Factory AI OS — the AI operating system for the Indian MSME factory",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "typecheck": "tsc --noEmit -p apps/web",
+    "test": "npm run test -w packages/evals",
+    "seed": "node -e \"import('./packages/db/src/index.ts')\" --experimental-strip-types 2>/dev/null || npm run build -w packages/db"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

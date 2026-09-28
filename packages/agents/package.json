@@ -1,0 +1,26 @@
+{
+  "name": "@factory/agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./orchestrator": "./src/orchestrator.ts",
+    "./tools": "./src/tools/index.ts",
+    "./models": "./src/models.ts",
+    "./semantic": "./src/semantic.ts",
+    "./extraction": "./src/extraction.ts",
+    "./digest": "./src/digest.ts",
+    "./memory": "./src/memory.ts",
+    "./embeddings": "./src/embeddings.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^1.0.20",
+    "@ai-sdk/provider": "^2.0.5",
+    "@factory/core": "*",
+    "@factory/db": "*",
+    "@openrouter/ai-sdk-provider": "^1.4.6",
+    "ai": "^5.0.76",
+    "zod": "^3.24.1"
+  }
+}

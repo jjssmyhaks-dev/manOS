@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# local data
+data/
+pglite-data/
+/tmp/
+
+# freebuff local marker
+.freebuff/
