@@ -7,6 +7,10 @@ import { entityTableDdl, type EntityRow, type EntityType } from './schema.js';
  * with the same interface, so app code never knows the difference.
  */
 
+// Cache on globalThis: Next.js bundles each API route separately, and a plain
+// module-level singleton would give every route its own empty database.
+const g = globalThis as unknown as { __factoryDb?: PGlite; __factoryDbReady?: Promise<PGlite> };
+
 let instance: PGlite | null = null;
 let ready: Promise<PGlite> | null = null;
 
@@ -17,29 +21,28 @@ let ready: Promise<PGlite> | null = null;
  * embeddings run JSONB + TS cosine — see schema.ts PGVECTOR_MIGRATION_SQL.)
  */
 export function getDb(): PGlite {
-  if (!instance) {
+  if (!g.__factoryDb) {
     instance = new PGlite(undefined, {});
+    g.__factoryDb = instance;
   }
-  return instance;
+  return g.__factoryDb;
 }
 
 /** For Node (CLI seeding, evals) use an in-memory PGlite. */
 export function getMemoryDb(): PGlite {
-  if (!instance) {
-    instance = new PGlite(undefined, {});
-  }
-  return instance;
+  return getDb();
 }
 
 export async function initDb(db?: PGlite): Promise<PGlite> {
   const d = db ?? getDb();
-  if (!ready) {
+  if (!g.__factoryDbReady) {
     ready = (async () => {
       await d.exec(entityTableDdl());
       return d;
     })();
+    g.__factoryDbReady = ready;
   }
-  await ready;
+  await g.__factoryDbReady;
   return d;
 }
 

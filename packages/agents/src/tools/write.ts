@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, jsonSchema } from 'ai';
 import { z } from 'zod';
 import { query, audit, insertEntity } from '@factory/db';
 import { checkPolicyAndQueue } from '@factory/core';
@@ -129,14 +129,25 @@ export async function executeAction(
 }
 
 // --- Agent-facing write tools -------------------------------------------------
+// NOTE: inputSchema uses jsonSchema() rather than zod for these write tools —
+// the AI SDK's zod3/zod4 dual-build validator mis-bounded in the Next webpack
+// bundle and rejected valid empty inputs; raw JSON schemas bypass that path.
 
 export const draftRemindersTool = (ctx: AgentContext) =>
   tool({
     description: 'Draft and queue payment reminders for overdue invoices. Outbound messages are queued for approval by policy.',
-    inputSchema: z.object({
-      minDaysOverdue: z.number().int().min(0).optional(),
-      limit: z.number().int().min(1).max(50).optional(),
-      channel: z.enum(['whatsapp', 'email']).optional(),
+    inputSchema: jsonSchema<{
+      minDaysOverdue?: number;
+      limit?: number;
+      channel?: 'whatsapp' | 'email';
+    }>({
+      type: 'object',
+      properties: {
+        minDaysOverdue: { type: 'integer', minimum: 0, description: 'Only invoices overdue at least this many days' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max invoices to draft (default 10)' },
+        channel: { type: 'string', enum: ['whatsapp', 'email'], description: 'Outbound channel (default whatsapp)' },
+      },
+      additionalProperties: false,
     }),
     execute: async ({ minDaysOverdue, limit, channel }) => {
       const res = await runOverdue(ctx.orgId, minDaysOverdue ?? 1, limit ?? 10);
@@ -162,8 +173,17 @@ export const draftRemindersTool = (ctx: AgentContext) =>
 export const draftRfqTool = (ctx: AgentContext) =>
   tool({
     description: 'Draft RFQs to preferred vendors for low-stock items. Queued for approval by policy.',
-    inputSchema: z.object({
-      itemNames: z.array(z.string()).max(20).optional().describe('Limit to these items; default: all low-stock items'),
+    inputSchema: jsonSchema<{ itemNames?: string[] }>({
+      type: 'object',
+      properties: {
+        itemNames: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 20,
+          description: 'Limit to these items; default: all low-stock items',
+        },
+      },
+      additionalProperties: false,
     }),
     execute: async ({ itemNames }) => {
       const low = await runLowStock(ctx.orgId);
@@ -194,15 +214,44 @@ export const draftRfqTool = (ctx: AgentContext) =>
 export const createPoDraftTool = (ctx: AgentContext) =>
   tool({
     description: 'Create a purchase order draft for a vendor/item/qty/rate. Queued for approval by policy; POs also queue a Tally push.',
-    inputSchema: z.object({
-      vendorId: z.string(), vendorName: z.string(), itemId: z.string(), itemName: z.string(),
-      qty: z.number().positive(), rate: z.number().positive(), uom: z.string().optional(),
+    inputSchema: jsonSchema<{
+      vendorName: string;
+      itemName: string;
+      qty: number;
+      rate: number;
+      uom?: string;
+    }>({
+      type: 'object',
+      properties: {
+        vendorName: { type: 'string', description: 'Vendor name (resolved to record)' },
+        itemName: { type: 'string', description: 'Item name (resolved to record)' },
+        qty: { type: 'number', exclusiveMinimum: 0 },
+        rate: { type: 'number', exclusiveMinimum: 0 },
+        uom: { type: 'string' },
+      },
+      required: ['vendorName', 'itemName', 'qty', 'rate'],
+      additionalProperties: false,
     }),
     execute: async (p) => {
+      // resolve names → ids so the model never needs to know database ids
+      const itemRows = await query<{ id: string }>(
+        `select id from entities where org_id=$1 and type='item' and coalesce(name, data->>'name') ilike $2 limit 1`,
+        [ctx.orgId, `%${p.itemName}%`]
+      );
+      if (!itemRows[0]) return { decision: 'deny' as const, reason: `Item '${p.itemName}' not found in item master.` };
+      const vendorRows = await query<{ id: string; name: string | null }>(
+        `select id, coalesce(name, data->>'name') as name from entities where org_id=$1 and type='party' and data->>'kind'='vendor' and coalesce(name, data->>'name') ilike $2 limit 1`,
+        [ctx.orgId, `%${p.vendorName}%`]
+      );
+      if (!vendorRows[0]) return { decision: 'deny' as const, reason: `Vendor '${p.vendorName}' not found in party master.` };
+      const payload = {
+        vendorId: vendorRows[0].id, vendorName: vendorRows[0].name ?? p.vendorName,
+        itemId: itemRows[0].id, itemName: p.itemName, qty: p.qty, rate: p.rate, uom: p.uom,
+      };
       const r = await checkPolicyAndQueue(
         {
           orgId: ctx.orgId, actionType: 'create_po', entityType: 'purchase_order',
-          payload: p, preview: previewFor('create_po', p), risk: 'write',
+          payload, preview: previewFor('create_po', payload), risk: 'write',
         },
         (pl) => executeAction(ctx.orgId, 'create_po', pl as Record<string, unknown>)
       );
@@ -213,9 +262,23 @@ export const createPoDraftTool = (ctx: AgentContext) =>
 export const logShiftOutputTool = (ctx: AgentContext) =>
   tool({
     description: 'Log shift output/rejects/downtime against a job card (from WhatsApp voice or form).',
-    inputSchema: z.object({
-      jobCardCode: z.string(), outputQty: z.number().int().min(0), rejectQty: z.number().int().min(0).optional(),
-      downtimeMins: z.number().int().min(0).optional(), note: z.string().optional(),
+    inputSchema: jsonSchema<{
+      jobCardCode: string;
+      outputQty: number;
+      rejectQty?: number;
+      downtimeMins?: number;
+      note?: string;
+    }>({
+      type: 'object',
+      properties: {
+        jobCardCode: { type: 'string', description: 'Job card code, e.g. JC-101' },
+        outputQty: { type: 'integer', minimum: 0 },
+        rejectQty: { type: 'integer', minimum: 0 },
+        downtimeMins: { type: 'integer', minimum: 0 },
+        note: { type: 'string' },
+      },
+      required: ['jobCardCode', 'outputQty'],
+      additionalProperties: false,
     }),
     execute: async ({ jobCardCode, outputQty, rejectQty, downtimeMins, note }) => {
       const rows = await query<{ id: string }>(

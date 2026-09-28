@@ -40,7 +40,18 @@ export interface VerticalPack {
   digestSections: string[];
 }
 
-const COMMON_TOOLS = ['query_data', 'list_overdue', 'get_item_stock', 'sales_summary', 'reorder_check', 'explain_metric'];
+const COMMON_TOOLS = [
+  'query_data',
+  'list_overdue',
+  'get_item_stock',
+  'sales_summary',
+  'reorder_check',
+  'explain_metric',
+  // write tools — every pack can draft actions; the policy engine governs them
+  'draft_reminders',
+  'draft_rfq',
+  'create_po_draft',
+];
 
 const FABRICATION: VerticalPack = {
   key: 'fabrication',

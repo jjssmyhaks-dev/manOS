@@ -24,8 +24,53 @@ interface PlannedCall {
   input: Record<string, unknown>;
 }
 
-function classify(text: string): PlannedCall | null {
+function classify(text: string, priorAssistant = ''): PlannedCall | null {
   const t = text.toLowerCase();
+
+  // --- write intents (highest priority) --------------------------------------
+  if (/(reminder|remind|yaad|payment follow)/.test(t)) {
+    const minDays = Number(t.match(/(\d+)\s*(day|din)/)?.[1] ?? 0);
+    return { toolName: 'draft_reminders', input: minDays ? { minDaysOverdue: minDays } : {} };
+  }
+  if (/(rfq|quote|quotation)/.test(t)) {
+    const names = t.match(/(?:for|of)\s+([a-z0-9][a-z0-9 \-]{2,40})/);
+    return { toolName: 'draft_rfq', input: names?.[1]?.trim() ? { itemNames: [names[1].trim()] } : {} };
+  }
+  if (/(create|raise|make|draft|bana)\b.*\bpo\b|purchase order/.test(t)) {
+    const item = t.match(/(?:of|for)\s+([a-z0-9][a-z0-9 \-]{2,40})/);
+    const qty = Number(t.match(/(\d+)\s*(nos|pcs|kg|ltr|units?)\b/)?.[1] ?? 0);
+    const rate = Number(t.match(/@?\s*(?:rs\.?|₹)\s*(\d+)/)?.[1] ?? 0);
+    return { toolName: 'create_po_draft', input: { vendorName: '', itemName: item?.[1]?.trim() ?? '', qty, rate } };
+  }
+  if (/(shift|job card|job-card|output|production log)/.test(t)) {
+    const code = t.match(/jc[-\s]?(\d+)/i)?.[1];
+    const qty = Number(t.match(/(\d+)\s*(nos|pcs|units?)\b/)?.[1] ?? 0);
+    return { toolName: 'log_shift_output', input: { jobCardCode: code ? `JC-${code}` : '', outputQty: qty } };
+  }
+
+    // --- confirm follow-up: prior assistant offered a draft --------------------
+  const confirmation = /^(yes|yeah|yep|ok|okay|haan|ha|kar do|kardo|proceed|go ahead|sure|please do|do it)\b/.test(t.trim());
+  if (confirmation) {
+    const prior = priorAssistant.toLowerCase();
+    if (/(draft rfq|rfq draft|rfq bana|draft rfqs)/.test(prior)) return { toolName: 'draft_rfq', input: {} };
+    if (/(draft payment reminders|reminder drafts|reminders bana|draft reminders)/.test(prior)) return { toolName: 'draft_reminders', input: {} };
+  }
+
+  // --- metric routing --------------------------------------------------------
+  if (/(top|best)\s+(customers?|parties|buyers)/.test(t) || /customer.*sales|sales.*by customer/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'sales_by_customer_30d' } };
+  if (/(open|pending|running)\s+(jobs?|job cards?)/.test(t) || /wip/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'open_job_cards' } };
+  if (/(delayed|late).*(orders?|deliver)/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'top_delayed_orders' } };
+  if (/(cash|collections?|payments? received)/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'cash_position' } };
+  if (/(stock value|inventory value|valuation)/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'stock_value' } };
+  if (/(receivable|total outstanding|collections pending)/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'receivables_total' } };
+
+  // --- read intents ----------------------------------------------------------
   const hasOverdue = /(overdue|outstanding|bakaya|udhaar|pending payment|receivab)/.test(t);
   const hasSales = /(sales|sale|bikri|revenue|orders (this|last)|this month)/.test(t);
   const hasStock = /(stock|inventory|bracket|item|sku|material)/.test(t);
@@ -59,6 +104,27 @@ function isHinglish(text: string): boolean {
 
 interface OverdueLine { invoice: string | null; customer: string | null; amount: number; overdueDays: number }
 interface StockItem { name?: string; stockOnHand?: number; reorderPoint?: number; suggestedQty?: number; uom?: string | null; low?: boolean }
+
+const METRIC_LABELS: Record<string, (r: Record<string, unknown>) => string> = {
+  sales_by_customer_30d: (r) => {
+    const rows = (r.breakdown ?? []) as Array<{ customer?: string; total?: number }>;
+    const total = Number(r.value ?? 0);
+    const lines = rows.slice(0, 5).map((x) => `• ${x.customer ?? '?'}: ${fmtInr(Number(x.total ?? 0))}`);
+    return `Sales (30d) ${fmtInr(total)}:\n${lines.join('\n')}`;
+  },
+  open_job_cards: (r) => {
+    const rows = (r.breakdown ?? []) as Array<{ status?: string; machine?: string; count?: number }>;
+    return `Open job cards: ${Number(r.value ?? 0)}\n${rows.slice(0, 6).map((x) => `• ${x.status ?? '?'} @ ${x.machine ?? '?'}: ${x.count ?? 0}`).join('\n')}`;
+  },
+  top_delayed_orders: (r) => {
+    const rows = (r.breakdown ?? []) as Array<{ order?: string; customer?: string; daysLate?: number }>;
+    const lines = rows.slice(0, 6).map((x) => `• ${x.order ?? '?'} — ${x.customer ?? '?'} (${x.daysLate ?? 0}d late)`);
+    return `Delayed orders: ${Number(r.value ?? 0)}\n${lines.join('\n')}`;
+  },
+  cash_position: (r) => `Cash collected (30d): ${fmtInr(Number(r.value ?? 0))}`,
+  stock_value: (r) => `Stock valuation: ${fmtInr(Number(r.value ?? 0))}`,
+  receivables_total: (r) => `Total receivables: ${fmtInr(Number(r.value ?? 0))}`,
+};
 
 function composeAnswer(planned: PlannedCall, result: unknown, userText: string): string {
   const hinglish = isHinglish(userText);
@@ -109,6 +175,35 @@ function composeAnswer(planned: PlannedCall, result: unknown, userText: string):
       : `${items.length} items need reorder:\n${lines.join('\n')}\nShall I draft RFQs?`;
   }
 
+  if (planned.toolName === 'query_data') {
+    const key = String(r.metric ?? planned.input.metricKey);
+    const renderer = METRIC_LABELS[key];
+    if (renderer) return `${renderer(r)}\n(as of ${String(r.asOf ?? 'today')})`;
+    return `${key}: ${String(r.value ?? 'n/a')} ${String(r.unit ?? '')}`;
+  }
+
+  if (planned.toolName === 'draft_reminders' || planned.toolName === 'draft_rfq') {
+    const count = Number(r.queuedCount ?? 0);
+    const details = (r.details ?? []) as string[];
+    if (!count) return hinglish ? 'Kuch bhi queue nahi hua — shayad sab already processed hain.' : 'Nothing was queued — items may already be processed.';
+    const lines = details.slice(0, 6).map((d) => `• ${d}`);
+    return hinglish
+      ? `${count} actions approvals inbox mein bheje gaye:\n${lines.join('\n')}\nApprovals page se approve karo.`
+      : `${count} actions queued in the approvals inbox:\n${lines.join('\n')}\nReview them on the Approvals page.`;
+  }
+
+  if (planned.toolName === 'create_po_draft') {
+    const decision = String((r as { decision?: string }).decision ?? 'unknown');
+    if (decision === 'auto') return 'PO created (auto-approved by policy). Tally push queued for the connector.';
+    return `PO request is ${decision}: ${String((r as { reason?: string }).reason ?? '')}`;
+  }
+
+  if (planned.toolName === 'log_shift_output') {
+    const rr = r as { decision?: string; reason?: string; ok?: boolean; error?: string };
+    if (rr.ok === false) return `Couldn't log output: ${rr.error ?? 'unknown error'}`;
+    return `Shift output is ${rr.decision ?? 'queued'}: ${rr.reason ?? ''}`;
+  }
+
   return 'Done. (mock model)';
 }
 
@@ -123,7 +218,7 @@ export function createMockModel(): LanguageModelV2 {
     supportedUrls: {},
     async doGenerate(options) {
       const userText = lastUserText(options.prompt);
-      const planned = classify(userText);
+      const planned = classify(userText, priorAssistantText(options.prompt));
       if (!planned) {
         const text = fallbackText(userText);
         return {
@@ -148,7 +243,7 @@ export function createMockModel(): LanguageModelV2 {
     },
     async doStream(options) {
       const userText = lastUserText(options.prompt);
-      const planned = classify(userText);
+      const planned = classify(userText, priorAssistantText(options.prompt));
 
       // A queued tool call: compose the final answer from the tool result.
       if (planned && hasToolResult(options.prompt, planned.toolName)) {
@@ -200,6 +295,18 @@ function lastUserText(prompt: LanguageModelV2CallOptions['prompt']): string {
     if (m.role !== 'user') continue;
     for (const part of m.content) {
       if (part.type === 'text') out = part.text; // keep last
+    }
+  }
+  return out;
+}
+
+/** Concatenated text of prior assistant messages (for confirm follow-ups). */
+function priorAssistantText(prompt: LanguageModelV2CallOptions['prompt']): string {
+  let out = '';
+  for (const m of prompt) {
+    if (m.role !== 'assistant') continue;
+    for (const part of m.content) {
+      if (part.type === 'text') out += ` ${part.text}`;
     }
   }
   return out;

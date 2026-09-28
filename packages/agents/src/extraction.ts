@@ -163,13 +163,14 @@ export async function extractDocument(
 
 /** Accept a reviewed document: creates the sales order via policy engine. */
 export async function acceptDocument(orgId: string, documentId: string): Promise<{ ok: boolean; soId?: string; approvalId?: string; error?: string; decision?: string }> {
-  const rows = await query<{ extraction: string; status: string }>(
+  const rows = await query<{ extraction: string | Record<string, unknown>; status: string }>(
     'select extraction, status from documents where org_id = $1 and id = $2 limit 1',
     [orgId, documentId]
   );
   const doc = rows[0];
   if (!doc) return { ok: false, error: 'document not found' };
-  const ex = JSON.parse(doc.extraction ?? '{}') as ExtractedPo;
+  // PGlite parses jsonb already; tolerate raw string too
+  const ex = typeof doc.extraction === 'string' ? (JSON.parse(doc.extraction || '{}') as ExtractedPo) : ((doc.extraction ?? {}) as ExtractedPo);
 
   // match customer + items to master
   const cust = ex.customerName

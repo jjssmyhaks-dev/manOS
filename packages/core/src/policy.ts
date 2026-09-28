@@ -121,7 +121,8 @@ export async function decideApproval(
     return { status: 'rejected' };
   }
 
-  const payload = JSON.parse(appr.payload) as unknown;
+  // PGlite parses jsonb columns to JS objects already; tolerate raw strings too
+  const payload = typeof appr.payload === 'string' ? (JSON.parse(appr.payload) as unknown) : (appr.payload as unknown);
   let result: { ok: boolean; result?: unknown; error?: string };
   try {
     result = await execute(payload);

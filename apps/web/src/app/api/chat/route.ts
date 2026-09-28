@@ -19,7 +19,8 @@ export async function POST(req: Request) {
       conversationId?: string;
       channel?: 'web' | 'whatsapp';
     };
-    const lastUser = [...(raw.messages ?? [])].reverse().find((m) => m.role === 'user');
+    const uiMessages = raw.messages ?? [];
+    const lastUser = [...uiMessages].reverse().find((m) => m.role === 'user');
     const text =
       lastUser?.parts?.filter((p) => p.type === 'text').map((p) => p.text ?? '').join(' ') ||
       lastUser?.content ||
@@ -37,7 +38,21 @@ export async function POST(req: Request) {
       return Response.json({ error: 'invalid request', details: parsed.error.flatten() }, { status: 400 });
     }
 
-    return await runOrchestrator(parsed.data);
+    // prior turns for follow-up context ("yes, do it") — text parts only,
+    // excluding the final user message (passed as `message`)
+    const prior = uiMessages.slice(0, -1);
+    const history = prior
+      .map((m) => ({
+        role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+        text:
+          m.parts?.filter((p) => p.type === 'text').map((p) => p.text ?? '').join(' ') ||
+          m.content ||
+          '',
+      }))
+      .filter((h) => h.text.trim().length > 0)
+      .slice(-10);
+
+    return await runOrchestrator(parsed.data, { history });
   } catch (e) {
     console.error('chat error', e);
     return Response.json({ error: e instanceof Error ? e.message : 'chat failed' }, { status: 500 });

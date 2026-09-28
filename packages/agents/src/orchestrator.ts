@@ -27,6 +27,8 @@ export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export interface OrchestratorDeps {
   /** Override model for tests/evals. */
   model?: Parameters<typeof streamText>[0]['model'];
+  /** Prior conversation turns (role + text) for follow-up context. */
+  history?: Array<{ role: 'user' | 'assistant'; text: string }>;
 }
 
 function systemPrompt(orgName: string, vertical: string, role: string): string {
@@ -58,7 +60,20 @@ export function toolsForOrg(opts: { vertical: string; role: string; ctx: AgentCo
   for (const [name, t] of Object.entries(all)) {
     if (!enabled.includes(name) && !['query_data', 'list_overdue', 'get_item_stock', 'sales_summary', 'reorder_check'].includes(name)) continue;
     if (!toolAllowedForRole(opts.role, name)) continue;
-    out[name] = t;
+    // surface tool-execute failures in server logs (SDK redacts them in the stream)
+    const tool = t as typeof t & { execute?: (...a: never[]) => Promise<unknown> };
+    if (typeof tool.execute === 'function') {
+      const orig = tool.execute.bind(tool);
+      (tool as { execute: unknown }).execute = async (...a: never[]) => {
+        try {
+          return await orig(...a);
+        } catch (e) {
+          console.error(`tool '${name}' execute failed:`, e);
+          throw e;
+        }
+      };
+    }
+    out[name] = tool as (typeof all)[keyof typeof all];
   }
   return out;
 }
@@ -101,10 +116,16 @@ export async function runOrchestrator(
   const result = streamText({
     model,
     system: systemPrompt(org.name, org.vertical, req.role),
-    prompt: req.message,
+    messages: [
+      ...(deps.history ?? []).map((h) => ({ role: h.role, content: h.text })),
+      { role: 'user' as const, content: req.message },
+    ],
     tools,
     stopWhen: stepCountIs(8),
     temperature: 0.2,
+    onError: ({ error }) => {
+      console.error('orchestrator stream error:', error);
+    },
     onFinish: async ({ finishReason, usage, response }) => {
       const latencyMs = Date.now() - started;
       const toolCalls = (response.messages ?? [])
