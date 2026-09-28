@@ -256,7 +256,7 @@ async function runOverdue(orgId: string, minDays: number, limit: number) {
 
 async function runLowStock(orgId: string) {
   const rows = await query<{ id: string; name: string | null; soh: string; rop: string; rq: string; uom: string | null }>(
-    `select id, data->>'name' as name, (data->>'stockOnHand') as soh, (data->>'reorderPoint') as rop,
+    `select id, coalesce(name, data->>'name') as name, (data->>'stockOnHand') as soh, (data->>'reorderPoint') as rop,
             (data->>'reorderQty') as rq, (data->>'uom') as uom
      from entities where org_id=$1 and type='item'
        and (data->>'stockOnHand')::numeric <= (data->>'reorderPoint')::numeric`,

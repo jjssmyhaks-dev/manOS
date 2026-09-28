@@ -121,7 +121,7 @@ export const METRICS: Record<string, MetricDef> = {
     description: 'Value of stock on hand across items.',
     compute: async (orgId) => {
       const rows = await query<{ name: string | null; soh: string; rate: string | null }>(
-        `select data->>'name' as name, (data->>'stockOnHand') as soh, (data->>'stdRate') as rate
+        `select coalesce(name, data->>'name') as name, (data->>'stockOnHand') as soh, (data->>'stdRate') as rate
          from entities where org_id=$1 and type='item'`,
         [orgId]
       );
@@ -140,7 +140,7 @@ export const METRICS: Record<string, MetricDef> = {
     description: 'Items at or below reorder point with suggested reorder qty.',
     compute: async (orgId) => {
       const rows = await query<{ id: string; name: string | null; soh: string; rop: string; rq: string; uom: string | null }>(
-        `select id, data->>'name' as name, (data->>'stockOnHand') as soh,
+        `select id, coalesce(name, data->>'name') as name, (data->>'stockOnHand') as soh,
                 (data->>'reorderPoint') as rop, (data->>'reorderQty') as rq, (data->>'uom') as uom
          from entities where org_id=$1 and type='item' and (data->>'stockOnHand')::numeric <= (data->>'reorderPoint')::numeric`,
         [orgId]

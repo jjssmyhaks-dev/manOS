@@ -101,9 +101,9 @@ function composeAnswer(planned: PlannedCall, result: unknown, userText: string):
   }
 
   if (planned.toolName === 'reorder_check') {
-    const items = (r.items ?? []) as StockItem[];
+    const items = (r.items ?? []) as Array<StockItem & { item?: string | null }>;
     if (!items.length) return hinglish ? 'Koi item reorder point ke neeche nahi hai.' : 'No items are at or below the reorder point.';
-    const lines = items.slice(0, 8).map((i) => `• ${i.name}: ${i.stockOnHand}/${i.reorderPoint} — suggest ${i.suggestedQty ?? ''} ${i.uom ?? ''}`.replace('  ', ' '));
+    const lines = items.slice(0, 8).map((i) => `• ${i.item ?? i.name ?? 'item'}: ${i.stockOnHand ?? 0}/${i.reorderPoint ?? 0} — suggest ${i.suggestedQty ?? ''} ${i.uom ?? ''}`.replace(/\s+/g, ' '));
     return hinglish
       ? `${items.length} items reorder ke liye:\n${lines.join('\n')}\nRFQ draft kar doon?`
       : `${items.length} items need reorder:\n${lines.join('\n')}\nShall I draft RFQs?`;

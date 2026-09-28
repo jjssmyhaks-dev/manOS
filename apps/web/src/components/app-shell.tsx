@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 
 const NAV = [
-  { href: '/', label: 'Chat', icon: MessageSquareText },
+  { href: '/chat', label: 'Chat', icon: MessageSquareText },
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/documents', label: 'Documents', icon: FileText },
   { href: '/procurement', label: 'Procurement', icon: ShoppingCart },
@@ -33,7 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="flex-1 px-2 py-3 space-y-1">
           {NAV.map(({ href, label, icon: Icon }) => {
-            const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
+            const active = href === '/chat' ? pathname === '/chat' : pathname.startsWith(href);
             return (
               <Link
                 key={href}

@@ -73,7 +73,7 @@ export const getItemStockTool = (ctx: AgentContext) =>
     execute: async ({ itemName }) => {
       const rows = await query<{ id: string; data: Record<string, unknown> }>(
         `select id, data from entities
-         where org_id=$1 and type='item' and (data->>'name' ilike $2 or data->>'code' ilike $2)
+         where org_id=$1 and type='item' and (coalesce(name, data->>'name') ilike $2 or data->>'code' ilike $2)
          limit 5`,
         [ctx.orgId, `%${itemName}%`]
       );
@@ -159,7 +159,7 @@ export const expiryReportTool = (ctx: AgentContext) =>
     inputSchema: z.object({ withinDays: z.number().int().min(1).max(365).optional() }),
     execute: async ({ withinDays }) => {
       const rows = await query<{ name: string | null; batch: string | null; exp: string | null; qty: string | null }>(
-        `select data->>'name' as name, data->>'batchNo' as batch, data->>'expiryDate' as exp, qty
+        `select coalesce(name, data->>'name') as name, data->>'batchNo' as batch, data->>'expiryDate' as exp, qty
          from entities where org_id=$1 and type='stock_ledger' and data->>'expiryDate' is not null
            and (data->>'expiryDate')::date <= current_date + $2
          order by (data->>'expiryDate')::date asc limit 50`,
