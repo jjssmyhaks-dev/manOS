@@ -10,6 +10,7 @@ interface Approval {
   id: string;
   action_type: string;
   entity_type: string | null;
+  payload: Record<string, unknown> | string | null;
   preview: string;
   risk: string;
   status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
@@ -46,6 +47,27 @@ export function ApprovalsClient() {
     }
   };
 
+  const savePayload = async (id: string, payload: Record<string, unknown>) => {
+    const res = await fetch('/api/approvals', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, payload }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(data.error ?? 'save failed');
+    }
+    await load();
+  };
+
+  const asPayload = (p: Approval): Record<string, unknown> | undefined => {
+    if (p.payload && typeof p.payload === 'object') return p.payload as Record<string, unknown>;
+    if (typeof p.payload === 'string') {
+      try { return JSON.parse(p.payload) as Record<string, unknown>; } catch { return undefined; }
+    }
+    return undefined;
+  };
+
   const shown = items.filter((a) => (filter === 'pending' ? a.status === 'pending' : true));
 
   return (
@@ -79,8 +101,17 @@ export function ApprovalsClient() {
               preview={a.preview}
               risk={a.risk}
               status={a.status}
+              payload={asPayload(a)}
               onApprove={() => decide(a.id, 'approve')}
               onReject={() => decide(a.id, 'reject')}
+              onSave={async (payload) => {
+                setBusyId(a.id);
+                try {
+                  await savePayload(a.id, payload);
+                } finally {
+                  setBusyId(null);
+                }
+              }}
             />
           ))}
         </div>

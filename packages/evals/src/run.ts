@@ -9,7 +9,10 @@ import { GOLDEN_CASES, type ExtractionCase, type MetricCase, type GuardrailCase 
  * Eval runner (PRD §6 evals + §17 definition of done):
  * every feature ships with an eval case; regression gate for prompt/model
  * changes. Uses the mock model + seed data so CI needs no keys.
+ * Evals always run on a throwaway in-memory DB (FACTORY_DB_MEMORY=1),
+ * never the developer's persistent dev store.
  */
+process.env.FACTORY_DB_MEMORY = '1';
 
 interface Result {
   name: string;

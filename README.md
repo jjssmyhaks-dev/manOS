@@ -63,8 +63,19 @@ packages/
   implementing the `LanguageModelV2` provider spec — it plans real tool calls over your data,
   so the whole agent loop runs offline with zero API keys.
 - **Embeddings**: JSONB float arrays + TypeScript cosine similarity in dev (pgvector cannot
-  load inside PGlite 0.2 wasm). For Supabase prod run `PGVECTOR_MIGRATION_SQL` from
+  load inside PGlite 0.2 wasm). For Postgres prod run `PGVECTOR_MIGRATION_SQL` from
   `packages/db/src/schema.ts` — `searchSimilar` switches to the `<=>` operator automatically.
+- **Storage engines** (`packages/db`): set `DATABASE_URL` (Neon / Supabase / any Postgres) and
+  every query — entities, approvals, documents, traces — goes to remote Postgres (schema
+  auto-applies); unset, it uses local PGlite persisted to `.pglite-data/` so dev data survives
+  restarts (`FACTORY_DB_MEMORY=1` forces in-memory for evals/CI). Same code, zero call-site
+  changes. See `.env.example`.
+- **AI model config**: paste an OpenRouter key in **Settings → AI model** — stored per-org in
+  the `ai_config` table (server-side only, never returned to the browser) and used by the
+  orchestrator immediately; env (`OPENROUTER_API_KEY`) is the fallback.
+- **Tally desktop connector**: register it on the **Connectors** page (device token shown
+  once), run `apps/connector-desktop` on the Tally machine — it heartbeats every 30s, pulls
+  masters, and pushes **approved** `tally_push` vouchers, acking results back into the audit log.
 
 ## Quickstart
 

@@ -139,7 +139,7 @@ export const reorderCheckTool = (ctx: AgentContext) =>
       const items = (res.breakdown ?? []) as Array<{ itemId: string; item: string | null; stockOnHand: number; reorderPoint: number; suggestedQty: number; uom: string | null }>;
       // preferred vendors per category from org facts + party preferred flags
       const vendors = await query<{ id: string; name: string | null; pref: boolean }>(
-        `select id, data->>'name' as name, coalesce((data->>'preferred')::boolean, false) as pref
+        `select id, coalesce(name, data->>'name') as name, coalesce((data->>'preferred')::boolean, false) as pref
          from entities where org_id=$1 and type='party' and data->>'kind'='vendor'`,
         [ctx.orgId]
       );

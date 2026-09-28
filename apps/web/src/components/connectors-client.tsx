@@ -26,6 +26,22 @@ export function ConnectorsClient() {
   const [busy, setBusy] = useState(false);
   const [csvText, setCsvText] = useState('');
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [regInfo, setRegInfo] = useState<{ connectorId: string; deviceToken: string } | null>(null);
+
+  const registerTally = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch('/api/connectors', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'register_tally' }),
+      });
+      const data = await res.json();
+      if (data.ok) setRegInfo({ connectorId: data.connectorId, deviceToken: data.deviceToken });
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const d = await fetch('/api/connectors').then((r) => r.json());
@@ -74,11 +90,35 @@ export function ConnectorsClient() {
               <CardContent className="text-xs text-muted-foreground">
                 {c.last_sync_at ? `Last sync: ${new Date(c.last_sync_at).toLocaleString('en-IN')}` : 'Never synced'}
                 {c.last_error ? <span className="text-red-600"> · {c.last_error}</span> : null}
+                {c.type === 'tally' && (
+                  <div className="mt-2">
+                    <Button size="sm" variant="outline" disabled={busy} onClick={registerTally}>
+                      {c.status === 'registered' || c.status === 'connected' ? 'Rotate token' : 'Register desktop connector'}
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           );
         })}
       </div>
+
+      {regInfo && (
+        <Card className="border-amber-400">
+          <CardHeader className="pb-1">
+            <CardTitle className="text-sm">Desktop connector credentials — shown once</CardTitle>
+            <CardDescription>
+              Set these on the machine running Tally Prime, then start the connector. It heartbeats every 30s, pulls masters and pushes approved vouchers.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-1 font-mono text-xs">
+            <div>FACTORY_API=http://localhost:3100</div>
+            <div>FACTORY_CONNECTOR_ID={regInfo.connectorId}</div>
+            <div>FACTORY_DEVICE_TOKEN={regInfo.deviceToken}</div>
+            <div>FACTORY_COMPANY=&quot;Your Company Name&quot;</div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

@@ -36,3 +36,6 @@ pglite-data/
 
 # freebuff local marker
 .freebuff/
+
+# pglite local data
+.pglite-data/

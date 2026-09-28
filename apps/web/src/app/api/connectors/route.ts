@@ -15,10 +15,10 @@ export async function GET() {
   return Response.json({ connectors: rows });
 }
 
-/** POST /api/connectors — actions: import_csv, set_status. */
+/** POST /api/connectors — actions: import_csv, set_status, register_tally. */
 export async function POST(req: Request) {
   const s = await getSession();
-  const body = (await req.json()) as { action: 'import_csv' | 'set_status'; type?: string; csv?: string; status?: string };
+  const body = (await req.json()) as { action: 'import_csv' | 'set_status' | 'register_tally'; type?: string; csv?: string; status?: string };
   try {
     if (body.action === 'import_csv') {
       if (!body.csv?.trim()) return Response.json({ error: 'csv text required' }, { status: 400 });
@@ -26,6 +26,19 @@ export async function POST(req: Request) {
       const res = await conn.importCsv(s.orgId, body.csv);
       await query(`update connectors set last_sync_at = now(), status='connected' where org_id=$1 and type='csv'`, [s.orgId]);
       return Response.json({ ok: true, ...res });
+    }
+    if (body.action === 'register_tally') {
+      // issue (or rotate) the desktop connector's device token — shown once
+      const token = `fct_${crypto.randomUUID().replaceAll('-', '')}`;
+      const rows = await query<{ id: string }>(
+        `insert into connectors (org_id, type, status, config, device_token)
+         values ($1,'tally','registered',jsonb_build_object('mode','desktop-agent'),$2)
+         on conflict (org_id, type) do update set device_token = excluded.device_token, status = 'registered'
+         returning id`,
+        [s.orgId, token]
+      );
+      await audit(s.orgId, `user:${s.userName}`, 'connector.registered', { metadata: { type: 'tally' } });
+      return Response.json({ ok: true, connectorId: rows[0]!.id, deviceToken: token });
     }
     if (body.action === 'set_status' && body.type) {
       await query(`update connectors set status=$3 where org_id=$1 and type=$2`, [s.orgId, body.type, body.status ?? 'connected']);

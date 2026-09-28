@@ -8,6 +8,14 @@ import { Input } from '@/components/ui/input';
 
 interface PolicyRow { action_type: string; decision: 'auto' | 'ask' | 'deny' }
 interface FactRow { id: string; fact: string; status: string; source: string }
+interface AiConfig {
+  provider: string;
+  model_route: 'default' | 'budget';
+  has_org_key: boolean;
+  key_masked: string | null;
+  has_env_key: boolean;
+  effective: string;
+}
 
 const ACTION_LABELS: Record<string, string> = {
   send_reminder: 'Send payment reminders',
@@ -28,11 +36,15 @@ export function SettingsClient() {
   const [newFact, setNewFact] = useState('');
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string; slug: string; vertical: string }>>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [ai, setAi] = useState<AiConfig | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     const s = await fetch('/api/settings').then((r) => r.json());
     setPolicies(s.policies ?? []);
     setFacts(s.facts ?? []);
+    setAi(s.ai ?? null);
     const o = await fetch('/api/org').then((r) => r.json());
     setOrgs(o.orgs ?? []);
     setCurrent(o.session?.orgSlug ?? null);
@@ -66,6 +78,30 @@ export function SettingsClient() {
     await load();
   };
 
+  const saveAiConfig = async () => {
+    setAiMsg(null);
+    const body: Record<string, unknown> = { action: 'set_ai_config' };
+    if (apiKeyInput.trim()) body.apiKey = apiKeyInput.trim();
+    if (ai?.model_route) body.modelRoute = ai.model_route;
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    setAiMsg(res.ok && data.ok ? { ok: true, text: 'Saved — the agent now runs on OpenRouter.' } : { ok: false, text: data.error ?? 'Save failed' });
+    setApiKeyInput('');
+    await load();
+  };
+
+  const clearAiKey = async () => {
+    await fetch('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'clear_ai_key' }),
+    });
+    setAiMsg({ ok: true, text: 'Org key removed — falling back to env or the mock model.' });
+    await load();
+  };
+
   const switchOrg = async (slug: string) => {
     await fetch('/api/org', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -88,6 +124,51 @@ export function SettingsClient() {
         <h1 className="text-lg font-semibold">Settings</h1>
         <p className="text-xs text-muted-foreground">Approval policy engine, org memory, workspace (F1 + harness layer).</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">AI model (OpenRouter)</CardTitle>
+          <CardDescription>
+            Paste an OpenRouter API key to run the agent on a real model. Keys are stored server-side per org and never sent back to the browser. Without a key the app runs the offline deterministic mock.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant={ai?.has_org_key || ai?.has_env_key ? 'success' : 'outline'}>
+              {ai?.effective ?? 'loading…'}
+            </Badge>
+            {ai?.key_masked && <span className="font-mono text-xs text-muted-foreground">{ai.key_masked}</span>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="password"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              placeholder="sk-or-v1-…"
+              className="max-w-xs font-mono text-xs"
+              aria-label="OpenRouter API key"
+              autoComplete="off"
+            />
+            <select
+              value={ai?.model_route ?? 'default'}
+              onChange={(e) => setAi((a) => (a ? { ...a, model_route: e.target.value as 'default' | 'budget' } : a))}
+              className="h-9 rounded-md border border-input bg-card px-2 text-xs"
+              aria-label="Model route"
+            >
+              <option value="default">default — gpt-4o class</option>
+              <option value="budget">budget — flash/sonnet class</option>
+            </select>
+            <Button size="sm" onClick={saveAiConfig} disabled={!apiKeyInput.trim() && !ai}>Save</Button>
+            {ai?.has_org_key && (
+              <Button size="sm" variant="ghost" onClick={clearAiKey}>Remove key</Button>
+            )}
+          </div>
+          {aiMsg && <p className={`text-xs ${aiMsg.ok ? 'text-emerald-600' : 'text-destructive'}`}>{aiMsg.text}</p>}
+          <p className="text-xs text-muted-foreground">
+            Route picks the model class: default uses gpt-4o for reasoning and gpt-4o-mini for extraction; budget uses cheaper models.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

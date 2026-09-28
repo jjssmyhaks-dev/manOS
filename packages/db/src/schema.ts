@@ -292,5 +292,14 @@ create table if not exists org_facts (
   status text not null default 'active', -- active|review|archived
   created_at timestamptz not null default now()
 );
+
+-- per-org AI model config (PRD §6): OpenRouter key + route, env fallback
+create table if not exists ai_config (
+  org_id uuid primary key,
+  provider text not null default 'openrouter',
+  api_key text,
+  model_route text not null default 'default', -- default|budget
+  updated_at timestamptz not null default now()
+);
 `.trim();
 }

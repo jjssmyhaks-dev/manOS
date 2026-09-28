@@ -2,7 +2,7 @@ import { streamText, stepCountIs } from 'ai';
 import { z } from 'zod';
 import { query, traceRun, meter } from '@factory/db';
 import { getPack, toolAllowedForRole } from '@factory/core';
-import { getModel, getModelConfig, getModelRoute } from './models.js';
+import { getModelForOrg, getModelConfig, getModelRoute, type AiConfigLookup } from './models.js';
 import { listMetricKeysForPrompt } from './tools/read.js';
 import { readToolDefs } from './tools/read.js';
 import { writeToolDefs } from './tools/write.js';
@@ -29,7 +29,20 @@ export interface OrchestratorDeps {
   model?: Parameters<typeof streamText>[0]['model'];
   /** Prior conversation turns (role + text) for follow-up context. */
   history?: Array<{ role: 'user' | 'assistant'; text: string }>;
+  /** Org-level AI config lookup (defaults to the ai_config table). */
+  aiConfigLookup?: AiConfigLookup;
 }
+
+/** Default lookup: per-org OpenRouter key/route from the ai_config table. */
+export const dbAiConfigLookup: AiConfigLookup = {
+  async get(orgId) {
+    const rows = await query<{ api_key: string | null; model_route: string | null }>(
+      'select api_key, model_route from ai_config where org_id = $1 limit 1',
+      [orgId]
+    );
+    return rows[0];
+  },
+};
 
 function systemPrompt(orgName: string, vertical: string, role: string): string {
   const pack = getPack(vertical);
@@ -110,7 +123,10 @@ export async function runOrchestrator(
     );
   }
 
-  const model = deps.model ?? getModel('reasoning');
+  const resolved = deps.model
+    ? { model: deps.model, cfg: getModelConfig() }
+    : await getModelForOrg(org.id, 'reasoning', deps.aiConfigLookup ?? dbAiConfigLookup);
+  const model = resolved.model;
   const tools = toolsForOrg({ vertical: org.vertical, role: req.role, ctx });
 
   const result = streamText({
@@ -141,7 +157,7 @@ export async function runOrchestrator(
         orgId: org.id,
         conversationId: convoId,
         agent: 'orchestrator',
-        model: cfg.profile === 'prod' ? getModelRoute(cfg).reasoning : 'mock',
+        model: resolved.cfg.profile === 'prod' ? getModelRoute(resolved.cfg).reasoning : 'mock',
         input: { message: req.message },
         output: { finishReason },
         toolCalls,

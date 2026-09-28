@@ -326,7 +326,7 @@ async function runLowStock(orgId: string) {
     [orgId]
   );
   const vendors = await query<{ id: string; name: string | null; pref: boolean }>(
-    `select id, data->>'name' as name, coalesce((data->>'preferred')::boolean, false) as pref
+    `select id, coalesce(name, data->>'name') as name, coalesce((data->>'preferred')::boolean, false) as pref
      from entities where org_id=$1 and type='party' and data->>'kind'='vendor'`,
     [orgId]
   );

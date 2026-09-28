@@ -37,10 +37,12 @@ function classify(text: string, priorAssistant = ''): PlannedCall | null {
     return { toolName: 'draft_rfq', input: names?.[1]?.trim() ? { itemNames: [names[1].trim()] } : {} };
   }
   if (/(create|raise|make|draft|bana)\b.*\bpo\b|purchase order/.test(t)) {
-    const item = t.match(/(?:of|for)\s+([a-z0-9][a-z0-9 \-]{2,40})/);
+    // "po of 100 nos MS Bracket 200mm from Sharma at 240" → item stops at from/at/for
+    const item = t.match(/(?:po of|of|for)\s+(?:\d+\s*[a-z]+\s+)?([a-z0-9][a-z0-9 \-]*?)(?=\s+(?:from|at|for|@)\b|$)/);
+    const vendor = t.match(/from\s+([a-z][a-z0-9 &]*?)(?=\s+(?:at|for|@)\b|$)/);
     const qty = Number(t.match(/(\d+)\s*(nos|pcs|kg|ltr|units?)\b/)?.[1] ?? 0);
-    const rate = Number(t.match(/@?\s*(?:rs\.?|₹)\s*(\d+)/)?.[1] ?? 0);
-    return { toolName: 'create_po_draft', input: { vendorName: '', itemName: item?.[1]?.trim() ?? '', qty, rate } };
+    const rate = Number(t.match(/@\s*(?:rs\.?|₹)?\s*(\d+)/)?.[1] ?? Number(t.match(/at\s+(?:rs\.?|₹)?\s*(\d+)/)?.[1] ?? 0));
+    return { toolName: 'create_po_draft', input: { vendorName: vendor?.[1]?.trim() ?? '', itemName: item?.[1]?.trim() ?? '', qty, rate } };
   }
   if (/(shift|job card|job-card|output|production log)/.test(t)) {
     const code = t.match(/jc[-\s]?(\d+)/i)?.[1];

@@ -1,28 +1,57 @@
+import path from 'node:path';
+import fs from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { entityTableDdl, type EntityRow, type EntityType } from './schema.js';
 
 /**
- * Dev/local database: PGlite (embedded Postgres WASM), in-memory mode.
- * Production swaps to Supabase Postgres (Mumbai) via ./server.ts
- * with the same interface, so app code never knows the difference.
+ * Data layer with two interchangeable engines (PRD §7):
+ * - DATABASE_URL set → real Postgres (Neon/Supabase) via node-postgres.
+ * - otherwise PGlite (embedded Postgres WASM): persistent on-disk store
+ *   (default ./.pglite-data — approvals/documents survive dev-server restarts)
+ *   or in-memory with FACTORY_DB_MEMORY=1 (evals/CI).
+ * Every helper takes the same interface, so app code never knows the difference.
  */
 
 // Cache on globalThis: Next.js bundles each API route separately, and a plain
 // module-level singleton would give every route its own empty database.
-const g = globalThis as unknown as { __factoryDb?: PGlite; __factoryDbReady?: Promise<PGlite> };
+const g = globalThis as unknown as {
+  __factoryDb?: PGlite;
+  __factoryDbReady?: Promise<PGlite>;
+  __factoryPool?: import('pg').Pool;
+};
 
 let instance: PGlite | null = null;
 let ready: Promise<PGlite> | null = null;
 
-/**
- * Web/dev database: in-memory PGlite, seeded on first access (session.ts).
- * For a persistent dev store swap to a nodefs dataDir; for production use the
- * Supabase path in ./server.ts. (pgvector is not loadable inside PGlite 0.2.x;
- * embeddings run JSONB + TS cosine — see schema.ts PGVECTOR_MIGRATION_SQL.)
- */
+export function hasRemoteDb(): boolean {
+  return Boolean(process.env.DATABASE_URL);
+}
+
+function resolveDbDir(): string | undefined {
+  if (process.env.FACTORY_DB_MEMORY === '1') return undefined;
+  if (process.env.FACTORY_DB_DIR) return process.env.FACTORY_DB_DIR;
+  // default: project-root/.pglite-data (walk up from cwd to find package.json)
+  let dir = process.cwd();
+  for (let i = 0; i < 4; i++) {
+    try {
+      if (fs.existsSync(path.join(dir, 'package.json'))) {
+        const dataDir = path.join(dir, '.pglite-data');
+        fs.mkdirSync(dataDir, { recursive: true });
+        return dataDir;
+      }
+    } catch {
+      /* fall through */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
 export function getDb(): PGlite {
   if (!g.__factoryDb) {
-    instance = new PGlite(undefined, {});
+    const dataDir = resolveDbDir();
+    instance = dataDir ? new PGlite(dataDir, {}) : new PGlite(undefined, {});
     g.__factoryDb = instance;
   }
   return g.__factoryDb;
@@ -51,17 +80,73 @@ export async function setOrgContext(db: PGlite, orgId: string): Promise<void> {
   await db.exec(`select set_config('app.org_id', '${orgId.replace(/'/g, "''")}', false);`);
 }
 
+// ---------------------------------------------------------------------------
+// Remote Postgres (Neon / Supabase) engine
+// ---------------------------------------------------------------------------
+
+type PgPool = import('pg').Pool;
+
+function getPool(): PgPool {
+  if (!g.__factoryPool) {
+    throw new Error('pg pool not initialised — call ensurePool() first');
+  }
+  return g.__factoryPool;
+}
+
+/** Lazily import node-postgres and create the pool (ESM-safe). */
+async function ensurePool(): Promise<PgPool> {
+  if (!g.__factoryPool) {
+    // dynamic import keeps PGlite-only paths (evals, edge) from loading pg
+    const mod = (await import('pg')) as unknown as { default?: { Pool: typeof import('pg').Pool }; Pool?: typeof import('pg').Pool };
+    const Pool = mod.default?.Pool ?? mod.Pool!;
+    g.__factoryPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 5,
+      ssl: /sslmode=require/.test(process.env.DATABASE_URL ?? '') ? { rejectUnauthorized: false } : undefined,
+    });
+  }
+  return g.__factoryPool;
+}
+
+let remoteSchemaReady: Promise<void> | null = null;
+
+/** Run the DDL against remote Postgres once per process (idempotent DDL). */
+export async function ensureRemoteSchema(): Promise<void> {
+  if (!remoteSchemaReady) {
+    remoteSchemaReady = (async () => {
+      const pool = await ensurePool();
+      await pool.query(entityTableDdl());
+    })().catch((e: unknown) => {
+      remoteSchemaReady = null;
+      throw e;
+    });
+  }
+  return remoteSchemaReady;
+}
+
 export async function query<T = Record<string, unknown>>(
   sql: string,
   params?: unknown[],
   db?: PGlite
 ): Promise<T[]> {
+  // Remote Postgres wins over the local-engine token: callers pass `db` only
+  // to pick between local engines, and mixed writes would split the dataset.
+  if (hasRemoteDb()) {
+    await ensureRemoteSchema();
+    const res = await getPool().query(sql, params as never[]);
+    return res.rows as T[];
+  }
   const d = db ?? (await initDb());
   const res = await d.query(sql, params as never[]);
   return res.rows as T[];
 }
 
 export async function exec(sql: string, db?: PGlite): Promise<void> {
+  if (hasRemoteDb()) {
+    await ensureRemoteSchema();
+    await getPool().query(sql);
+    return;
+  }
   const d = db ?? (await initDb());
   await d.exec(sql);
 }

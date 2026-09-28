@@ -32,3 +32,52 @@ export async function POST(req: Request) {
   await audit(s.orgId, `user:${s.userName}`, `approvals.${body.decision}`, { entityId: body.id, metadata: { actionType } });
   return Response.json({ ok: true, ...res });
 }
+
+/**
+ * PATCH /api/approvals — human edit of a pending approval's payload before
+ * deciding (PRD F7): correct amounts, tweak the reminder message, change the
+ * channel. The preview is re-rendered from the edited payload.
+ */
+export async function PATCH(req: Request) {
+  const s = await getSession();
+  const body = (await req.json()) as { id: string; payload: Record<string, unknown>; preview?: string };
+  if (!body?.id || typeof body.payload !== 'object') {
+    return Response.json({ error: 'id and payload required' }, { status: 400 });
+  }
+
+  const rows = await query<{ id: string; action_type: string; status: string }>(
+    'select id, action_type, status from approvals where id = $1 and org_id = $2 limit 1',
+    [body.id, s.orgId]
+  );
+  const appr = rows[0];
+  if (!appr) return Response.json({ error: 'approval not found' }, { status: 404 });
+  if (appr.status !== 'pending') return Response.json({ error: `cannot edit a ${appr.status} approval` }, { status: 409 });
+
+  const preview = body.preview?.trim() || renderPreview(appr.action_type, body.payload);
+  await query(
+    `update approvals set payload = $2::jsonb, preview = $3 where id = $1`,
+    [body.id, JSON.stringify(body.payload), preview]
+  );
+  await audit(s.orgId, `user:${s.userName}`, 'approval.edited', {
+    entityId: body.id,
+    metadata: { actionType: appr.action_type },
+  });
+  return Response.json({ ok: true, preview });
+}
+
+/** Re-render the human-facing preview for an edited payload. */
+function renderPreview(actionType: string, p: Record<string, unknown>): string {
+  const v = p as Record<string, string | number | undefined>;
+  switch (actionType) {
+    case 'send_reminder':
+      return `Send ${v.channel ?? 'WhatsApp'} payment reminder to ${v.customer ?? 'customer'} for ${v.invoice ?? 'invoice'} (₹${v.amount ?? 0}, ${v.days ?? 0} days overdue)`;
+    case 'send_rfq':
+      return `Send RFQ to ${v.vendor ?? 'vendor'} for ${v.qty ?? 0} × ${v.item ?? 'item'}`;
+    case 'create_po':
+      return `Create PO: ${v.qty ?? 0} × ${v.itemName ?? v.item ?? 'item'} from ${v.vendorName ?? v.vendor ?? 'vendor'} @ ₹${v.rate ?? 0}`;
+    case 'tally_push':
+      return `Push ${v.voucherType ?? 'voucher'} ${v.voucherNo ?? ''} to Tally`;
+    default:
+      return `${actionType}: ${JSON.stringify(p).slice(0, 140)}`;
+  }
+}

@@ -96,30 +96,33 @@ async function pullMasters() {
 }
 
 async function pushApproved() {
-  // heartbeat returns queued, approved pushes; execute each against Tally
+  // heartbeat returns queued, APPROVED pushes; execute each against Tally
   const res = await api('heartbeat', { status: 'connected' });
   const acks = [];
   for (const push of res.pendingPushes ?? []) {
     try {
-      const payload = JSON.parse(push.body ?? '{}');
+      const payload = typeof push.body === 'string' ? JSON.parse(push.body || '{}') : (push.body ?? {});
       const xml = buildVoucherXml(payload);
       await tally(xml);
       acks.push({ sourceId: push.id, ok: true });
-      log('pushed voucher', payload.voucherNo ?? push.id);
+      log(`pushed ${payload.voucherType ?? 'voucher'} ${payload.voucherNo ?? push.id}${push.source === 'approval' ? ' (approved)' : ''}`);
     } catch (e) {
       acks.push({ sourceId: push.id, ok: false, error: String(e.message ?? e) });
       log('push failed', e.message ?? e);
     }
   }
   if (acks.length) await api('ack', { acks });
+  return acks.length;
 }
 
 function buildVoucherXml(payload) {
-  const type = payload.voucherType ?? 'Sales';
-  const lines = (payload.lines ?? []).map((l) =>
-    `<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>${l.item}</STOCKITEMNAME><RATE>${l.rate ?? 0}</RATE><AMOUNT>${l.amount ?? (l.qty ?? 0) * (l.rate ?? 0)}</AMOUNT><ACTUALQTY>${l.qty ?? 0}</ACTUALQTY></ALLINVENTORYENTRIES.LIST>`
+  const type = payload.voucherType ?? 'Purchase';
+  const party = payload.partyLedger ?? payload.vendorName ?? payload.vendor ?? '';
+  // single-item pushes (agent-created POs) become one inventory line
+  const lines = (payload.lines ?? (payload.item ? [{ item: payload.itemName ?? payload.item, qty: payload.qty, rate: payload.rate, uom: payload.uom }] : [])).map((l) =>
+    `<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>${l.item ?? l.itemName ?? ''}</STOCKITEMNAME><RATE>${l.rate ?? 0}</RATE><AMOUNT>${l.amount ?? (l.qty ?? 0) * (l.rate ?? 0)}</AMOUNT><ACTUALQTY>${l.qty ?? 0} ${l.uom ?? ''}</ACTUALQTY></ALLINVENTORYENTRIES.LIST>`
   ).join('');
-  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${TALLY_COMPANY}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE><VOUCHER VCHTYPE="${type}" ACTION="Create"><DATE>${(payload.date ?? '').replaceAll('-', '')}</DATE><VOUCHERTYPENAME>${type}</VOUCHERTYPENAME><VOUCHERNUMBER>${payload.voucherNo ?? ''}</VOUCHERNUMBER><PARTYLEDGERNAME>${payload.partyLedger ?? ''}</PARTYLEDGERNAME><NARRATION>Imported by Factory AI OS (approved)</NARRATION>${lines}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
+  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${TALLY_COMPANY}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE><VOUCHER VCHTYPE="${type}" ACTION="Create"><DATE>${(payload.date ?? new Date().toISOString().slice(0, 10)).replaceAll('-', '')}</DATE><VOUCHERTYPENAME>${type}</VOUCHERTYPENAME><VOUCHERNUMBER>${payload.voucherNo ?? ''}</VOUCHERNUMBER><PARTYLEDGERNAME>${party}</PARTYLEDGERNAME><NARRATION>Imported by Factory AI OS (approved)</NARRATION>${lines}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
 }
 
 async function withBackoff(fn) {
@@ -141,8 +144,8 @@ async function withBackoff(fn) {
 async function cycle() {
   await withBackoff(async () => {
     const pulled = await pullMasters();
-    await pushApproved();
-    log(`cycle ok — pulled ${pulled} master records`);
+    const pushed = await pushApproved();
+    log(`cycle ok — pulled ${pulled} masters, pushed ${pushed} vouchers`);
   });
 }
 

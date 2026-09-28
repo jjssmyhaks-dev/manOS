@@ -38,11 +38,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (op === 'heartbeat') {
     await query(`update connectors set status=$2, last_sync_at=now(), last_error=$3 where id=$1`, [id, body.status ?? 'connected', body.error ?? null]);
-    const pending = await query<{ id: string; payload: string }>(
+    // Pending pushes = APPROVED tally_push approvals (never unapproved ones —
+    // the policy engine is the gate) with their full payload for voucher import.
+    const pending = await query<{ id: string; action_type: string; payload: Record<string, unknown> }>(
+      `select id, action_type, payload from approvals
+       where org_id=$1 and action_type='tally_push' and status='executed' and result->>'pushed' is null
+       order by created_at asc limit 20`,
+      [auth.orgId]
+    );
+    const rows = await query<{ id: string; body: string }>(
       `select id, body from notifications where org_id=$1 and channel='connector' and template='tally_push' and status='queued' limit 20`,
       [auth.orgId]
     );
-    return Response.json({ ok: true, pendingPushes: pending });
+    return Response.json({
+      ok: true,
+      pendingPushes: [
+        ...pending.map((p) => ({ id: p.id, body: JSON.stringify(p.payload ?? {}), source: 'approval' })),
+        ...rows.map((r) => ({ id: r.id, body: r.body, source: 'notification' })),
+      ],
+    });
   }
 
   if (op === 'pull') {
@@ -72,12 +86,36 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   if (op === 'ack') {
+    let okCount = 0;
+    let failCount = 0;
     for (const a of body.acks ?? []) {
       await audit(auth.orgId, 'connector', 'tally.push_ack', {
         metadata: { sourceId: a.sourceId, ok: a.ok, error: a.error },
       });
+      if (a.ok) {
+        okCount++;
+        // approval-sourced pushes: stamp result so they are not re-served
+        await query(
+          `update approvals set result = jsonb_build_object('pushed', true, 'pushed_at', now())
+           where id = $1 and action_type = 'tally_push'`,
+          [a.sourceId]
+        );
+        // notification-sourced pushes: mark done
+        await query(
+          `update notifications set status = 'sent' where id::text = $1 and channel = 'connector'`,
+          [a.sourceId]
+        );
+      } else {
+        failCount++;
+        await query(
+          `update approvals set result = jsonb_build_object('push_error', $2)
+           where id = $1 and action_type = 'tally_push' and result->>'pushed' is null`,
+          [a.sourceId, (a.error ?? 'push failed').slice(0, 300)]
+        );
+      }
     }
-    return Response.json({ ok: true });
+    await query(`update connectors set last_sync_at=now(), status='connected' where id=$1`, [id]);
+    return Response.json({ ok: true, acked: okCount, failed: failCount });
   }
 
   return Response.json({ error: 'unknown op' }, { status: 400 });
