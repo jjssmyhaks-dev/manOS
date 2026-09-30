@@ -49,6 +49,91 @@ export function zohoBaseUrl(region: ZohoConfig['region']): string {
 
 const ACCOUNTS_URL = 'https://accounts.zoho.in/oauth/v2/token';
 
+// --- OAuth redirect flow (owners click 'Connect Zoho', no token pasting) -----
+
+export interface ZohoOAuthEnv {
+  clientId: string;
+  clientSecret: string;
+  region: ZohoConfig['region'];
+}
+
+export function zohoOAuthEnv(): ZohoOAuthEnv | null {
+  const clientId = process.env.ZOHO_CLIENT_ID;
+  const clientSecret = process.env.ZOHO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  const region = (process.env.ZOHO_REGION as ZohoConfig['region']) ?? 'in';
+  return { clientId, clientSecret, region };
+}
+
+function accountsBase(region: ZohoConfig['region']): string {
+  return region === 'us' ? 'https://accounts.zoho.com' : region === 'eu' ? 'https://accounts.zoho.eu' : 'https://accounts.zoho.in';
+}
+
+/**
+ * The authorize URL the owner is redirected to. `state` carries the signed
+ * org slug so the callback knows which workspace connected; redirect_uri must
+ * exactly match the one registered on the Zoho API console client.
+ */
+export function zohoAuthorizeUrl(env: ZohoOAuthEnv, redirectUri: string, state: string): string {
+  const url = new URL(`${accountsBase(env.region)}/oauth/v2/auth`);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', env.clientId);
+  url.searchParams.set('scope', 'ZohoBooks.fullaccess.books');
+  url.searchParams.set('redirect_uri', redirectUri);
+  url.searchParams.set('state', state);
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  return url.toString();
+}
+
+export interface ZohoExchangeResult {
+  ok: boolean;
+  refreshToken?: string;
+  error?: string;
+}
+
+/** Exchange the authorization code for a long-lived refresh token. */
+export async function zohoExchangeCode(env: ZohoOAuthEnv, code: string, redirectUri: string): Promise<ZohoExchangeResult> {
+  try {
+    const res = await fetch(`${accountsBase(env.region)}/oauth/v2/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: env.clientId,
+        client_secret: env.clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { refresh_token?: string; error?: string };
+    if (!res.ok || !data.refresh_token) return { ok: false, error: data.error ?? `token exchange HTTP ${res.status}` };
+    return { ok: true, refreshToken: data.refresh_token };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface ZohoOrgChoice {
+  organizationId: string;
+  name: string;
+}
+
+/** List the organizations the granted token can see (auto-pick or show choice). */
+export async function zohoListOrganizations(refreshToken: string, env: ZohoOAuthEnv): Promise<{ ok: boolean; orgs?: ZohoOrgChoice[]; error?: string }> {
+  try {
+    const token = await accessToken({ clientId: env.clientId, clientSecret: env.clientSecret, refreshToken, organizationId: 'pending', region: env.region });
+    const res = await fetch(`${zohoBaseUrl(env.region)}/organizations`, {
+      headers: { authorization: `Zoho-oauthtoken ${token}` },
+    });
+    const data = (await res.json().catch(() => ({}))) as { organizations?: Array<{ organization_id: string; name: string }>; message?: string };
+    if (!res.ok || !data.organizations) return { ok: false, error: data.message ?? `organizations HTTP ${res.status}` };
+    return { ok: true, orgs: data.organizations.map((o) => ({ organizationId: String(o.organization_id), name: o.name })) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // access-token cache (per connector config hash) — tokens live ~1h
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 

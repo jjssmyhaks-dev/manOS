@@ -4,6 +4,9 @@ import {
   parseZohoConfig,
   zohoTestConnection,
   ZohoBooksConnector,
+  parseQboConfig,
+  qboTestConnection,
+  QuickBooksConnector,
   parseTallyServerConfig,
   tallyTestConnection,
   tallySync,
@@ -33,6 +36,8 @@ export async function GET() {
     let hint = '';
     if (r.type === 'zoho_books') {
       hint = c.clientId ? `client ${mask(String(c.clientId))} · org ${String(c.organizationId ?? '')}` : '';
+    } else if (r.type === 'quickbooks') {
+      hint = c.clientId ? `${String(c.environment ?? 'sandbox')} · realm ${String(c.realmId ?? '')}` : '';
     } else if (r.type === 'tally') {
       const mode = String(c.mode ?? 'desktop-agent');
       hint = mode === 'server' ? `${String(c.host)}:${String(c.port ?? 9000)} · ${String(c.company)}` : 'desktop agent (device token)';
@@ -83,6 +88,14 @@ export async function POST(req: Request) {
         return Response.json(t.ok ? { ok: true, detail: `Live: ${t.orgName}` } : t);
       }
 
+      if (body.type === 'quickbooks') {
+        const row = await query<{ config: Record<string, unknown> }>('select config from connectors where org_id=$1 and type=$2 limit 1', [s.orgId, 'quickbooks']);
+        const cfg = parseQboConfig(body.config ?? row[0]?.config);
+        if (!cfg) return Response.json({ ok: false, error: 'Configure client id, secret, refresh token and company realm id first.' });
+        const t = await qboTestConnection(cfg);
+        return Response.json(t.ok ? { ok: true, detail: `Live: ${t.companyName}` } : t);
+      }
+
       if (body.type === 'tally') {
         const row = await query<{ config: Record<string, unknown>; id: string }>('select config, id from connectors where org_id=$1 and type=$2 limit 1', [s.orgId, 'tally']);
         const cfg = parseTallyServerConfig({ ...(row[0]?.config ?? {}), ...(body.config ?? {}) });
@@ -113,6 +126,12 @@ export async function POST(req: Request) {
            on conflict (org_id, type) do update set config = $2::jsonb, status = 'registered'`,
           [s.orgId, JSON.stringify(body.config)]
         );
+      } else if (body.type === 'quickbooks') {
+        await query(
+          `insert into connectors (org_id, type, status, config) values ($1,'quickbooks','registered',$2::jsonb)
+           on conflict (org_id, type) do update set config = $2::jsonb, status = 'registered'`,
+          [s.orgId, JSON.stringify(body.config)]
+        );
       } else {
         return Response.json({ error: `'${body.type}' is configured via environment or its own app` }, { status: 400 });
       }
@@ -134,6 +153,19 @@ export async function POST(req: Request) {
         const pulled = results.reduce((sum, r) => sum + r.pulled, 0);
         const errors = results.flatMap((r) => r.errors);
         return Response.json({ ok: errors.length === 0, pulled, detail: `Pulled ${pulled} records from Zoho Books`, errors });
+      }
+      if (body.type === 'quickbooks') {
+        const row = await query<{ id: string; config: Record<string, unknown> }>('select id, config from connectors where org_id=$1 and type=$2 limit 1', [s.orgId, 'quickbooks']);
+        const cfg = parseQboConfig(row[0]?.config);
+        if (!cfg || !row[0]) return Response.json({ error: 'Configure the QuickBooks connection first.' }, { status: 400 });
+        const conn = new QuickBooksConnector();
+        const results = [];
+        for (const entity of ['parties', 'items', 'invoices'] as const) {
+          results.push(await conn.sync(s.orgId, row[0].id, entity));
+        }
+        const pulled = results.reduce((sum, r) => sum + r.pulled, 0);
+        const errors = results.flatMap((r) => r.errors);
+        return Response.json({ ok: errors.length === 0, pulled, detail: `Pulled ${pulled} records from QuickBooks`, errors });
       }
       if (body.type === 'tally') {
         const row = await query<{ id: string; config: Record<string, unknown> }>('select id, config from connectors where org_id=$1 and type=$2 limit 1', [s.orgId, 'tally']);

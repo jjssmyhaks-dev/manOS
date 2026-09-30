@@ -6,4 +6,5 @@ export * from './gsp.js';
 export * from './tally/xml.js';
 export * from './tally/server-adapter.js';
 export * from './zoho-books.js';
+export * from './quickbooks.js';
 export { fetchWhatsappMedia } from './whatsapp.js';

@@ -27,9 +27,10 @@ interface ActionResult {
 const LABELS: Record<string, { title: string; desc: string }> = {
   tally: { title: 'Tally Prime', desc: 'Two-way accounting sync. Test the connection live, pull masters & vouchers, push approved vouchers straight into Tally — or run the desktop agent on the Tally machine.' },
   zoho_books: { title: 'Zoho Books', desc: 'Cloud accounting sync: contacts, items and invoices pull into the agent\u2019s data layer; approved invoices push back to Zoho.' },
+  quickbooks: { title: 'QuickBooks Online', desc: 'Same sync framework as Zoho: customers, inventory items and invoices pull in; approved invoices push back to QBO.' },
   whatsapp: { title: 'WhatsApp Business', desc: 'The conversational surface: inbound questions, approvals from the phone, voice notes, digests and alerts. Credentials are platform-level.' },
   csv: { title: 'Excel / CSV import', desc: 'Upload Tally-exported or hand-made sheets; rows upsert by code (idempotent re-import).' },
-  gsp: { title: 'GSP (e-invoice / e-way bill)', desc: 'Sandbox provider included; add GSTZEN_API_KEY for live IRN generation.' },
+  gsp: { title: 'GSP (e-invoice / e-way bill)', desc: 'Generates IRNs for B2B invoices (Collections page). Sandbox included; GSTZEN_API_KEY enables live IRN.' },
 };
 
 /** Per-type setup forms — plain-language fields, secrets masked server-side. */
@@ -81,6 +82,43 @@ function SetupForm({ type, onDone }: { type: string; onDone: (msg: { ok: boolean
         </div>
         <p className="text-[11px] text-muted-foreground">
           Tally must be running with OLE/XML port enabled on that machine. If Tally is not network-reachable, use the desktop connector instead.
+        </p>
+      </div>
+    );
+  }
+
+  if (type === 'quickbooks') {
+    return (
+      <div className="mt-2 space-y-2 border-t pt-2">
+        <div className="grid grid-cols-2 gap-2">
+          <Input value={zohoClientId} onChange={(e) => setZohoClientId(e.target.value)} placeholder="Client ID" aria-label="QBO client id" className="text-xs" />
+          <Input type="password" value={zohoClientSecret} onChange={(e) => setZohoClientSecret(e.target.value)} placeholder="Client secret" aria-label="QBO client secret" className="text-xs" />
+          <Input type="password" value={zohoRefresh} onChange={(e) => setZohoRefresh(e.target.value)} placeholder="Refresh token" aria-label="QBO refresh token" className="text-xs" />
+          <Input value={zohoOrg} onChange={(e) => setZohoOrg(e.target.value)} placeholder="Company realm ID" aria-label="QBO realm id" className="text-xs" />
+          <select value={zohoRegion} onChange={(e) => setZohoRegion(e.target.value)} aria-label="QBO environment" className="h-9 rounded-md border border-input bg-card px-2 text-xs">
+            <option value="sandbox">Sandbox</option>
+            <option value="production">Production</option>
+          </select>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={busy || !zohoClientId || !zohoClientSecret || !zohoRefresh || !zohoOrg} onClick={async () => {
+            const cfg = { clientId: zohoClientId, clientSecret: zohoClientSecret, refreshToken: zohoRefresh, realmId: zohoOrg, environment: zohoRegion };
+            const r = await call('configure', cfg);
+            if (r.ok) {
+              const t = await call('test');
+              onDone(t.ok ? { ok: true, text: t.detail ?? 'Connected to QuickBooks' } : { ok: false, text: t.error ?? 'Connection failed' });
+            } else {
+              onDone({ ok: false, text: r.error ?? 'Save failed' });
+            }
+          }}><Settings2Icon className="mr-1 h-3 w-3" /> Save & test</Button>
+          <Button size="sm" variant="ghost" disabled={busy || !zohoClientId || !zohoClientSecret || !zohoRefresh || !zohoOrg} onClick={async () => {
+            await call('configure', { clientId: zohoClientId, clientSecret: zohoClientSecret, refreshToken: zohoRefresh, realmId: zohoOrg, environment: zohoRegion });
+            const r = await call('sync');
+            onDone(r.ok ? { ok: true, text: r.detail ?? 'Synced' } : { ok: false, text: r.error ?? r.detail ?? 'Sync failed' });
+          }}><RefreshCwIcon className="mr-1 h-3 w-3" /> Save & sync now</Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Create an Intuit app at developer.intuit.com with accounting scope, generate a refresh token for your company, and paste it here. An OAuth click-through like Zoho's can be added once the app is registered.
         </p>
       </div>
     );
@@ -192,7 +230,7 @@ export function ConnectorsClient() {
     }
   };
 
-  const order = ['tally', 'zoho_books', 'whatsapp', 'csv', 'gsp', 'gmail'];
+  const order = ['tally', 'zoho_books', 'quickbooks', 'whatsapp', 'csv', 'gsp', 'gmail'];
   // union: every known connector card shows, enriched by DB state where present
   const byType = new Map(rows.map((r) => [r.type, r]));
   const catalogTypes = [...Object.keys(LABELS), ...rows.map((r) => r.type)];
@@ -242,7 +280,12 @@ export function ConnectorsClient() {
                       {busy === `${c.type}:sync` ? <Loader2Icon className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCwIcon className="mr-1 h-3 w-3" />} Sync now
                     </Button>
                   )}
-                  {(c.type === 'tally' || c.type === 'zoho_books') && (
+                  {c.type === 'zoho_books' && (
+                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => { window.location.href = '/api/connectors/zoho/connect'; }}>
+                      <PlugIcon className="mr-1 h-3 w-3" /> Connect Zoho
+                    </Button>
+                  )}
+                  {(c.type === 'tally' || c.type === 'quickbooks') && (
                     <Button size="sm" variant="ghost" onClick={() => setShowSetup((s) => ({ ...s, [c.type]: !s[c.type] }))}>
                       <Settings2Icon className="mr-1 h-3 w-3" /> {showSetup[c.type] ? 'Hide setup' : 'Connect / configure'}
                     </Button>

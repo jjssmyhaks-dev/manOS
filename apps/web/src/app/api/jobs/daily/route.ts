@@ -9,6 +9,7 @@ import {
 } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
 import { query, audit } from '@factory/db';
+import { parseZohoConfig, ZohoBooksConnector, parseQboConfig, QuickBooksConnector, parseTallyServerConfig, tallySync } from '@factory/connectors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -87,6 +88,20 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error('agent jobs failed:', e);
   }
+
+  // nightly connector sync: Tally/Zoho/QuickBooks data stays fresh without
+  // anyone clicking "Sync now"; failures queue a WhatsApp alert instead of
+  // dying silently (connectors that were never configured are skipped)
+  const syncReport = await runNightlyConnectorSync();
+  for (const f of syncReport.failures) {
+    await query(
+      `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp',$2,'connector_sync_alert',$3,'queued')`,
+      [f.orgId, f.orgName, `🔌 *${f.connector} sync failed last night*\n${f.detail}\n\nOpen Connectors → Test connection to see what's wrong. Data may be going stale.`]
+    );
+  }
+  await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.nightly_sync', {
+    metadata: { synced: syncReport.synced.length, failures: syncReport.failures.length },
+  });
   await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.daily_digest', { metadata: { orgs: results.length } });
 
   // deliver outbound WhatsApp (digests, reminders, alerts) for orgs with
@@ -99,7 +114,67 @@ export async function POST(req: Request) {
   }
 
   const reports = await runMonitoring();
-  return Response.json({ ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length });
+  return Response.json({
+    ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length,
+    nightlySync: { synced: syncReport.synced.length, failures: syncReport.failures.length },
+  });
+}
+
+/** Nightly pull for every configured accounting connector; failures collected for alerts. */
+async function runNightlyConnectorSync(): Promise<{
+  synced: Array<{ orgId: string; connector: string; pulled: number }>;
+  failures: Array<{ orgId: string; orgName: string; connector: string; detail: string }>;
+}> {
+  const synced: Array<{ orgId: string; connector: string; pulled: number }> = [];
+  const failures: Array<{ orgId: string; orgName: string; connector: string; detail: string }> = [];
+
+  const orgs = await query<{ id: string; name: string }>('select id, name from organizations');
+  const connRows = await query<{ org_id: string; id: string; type: string; config: Record<string, unknown> }>(
+    `select org_id, id, type, config from connectors where type in ('zoho_books','quickbooks','tally') and status != 'disconnected'`
+  );
+  const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+
+  for (const c of connRows) {
+    try {
+      if (c.type === 'zoho_books') {
+        const cfg = parseZohoConfig(c.config);
+        if (!cfg) continue;
+        const conn = new ZohoBooksConnector();
+        let pulled = 0;
+        for (const entity of ['parties', 'items', 'invoices'] as const) {
+          pulled += (await conn.sync(c.org_id, c.id, entity)).pulled;
+        }
+        synced.push({ orgId: c.org_id, connector: 'Zoho Books', pulled });
+      } else if (c.type === 'quickbooks') {
+        const cfg = parseQboConfig(c.config);
+        if (!cfg) continue;
+        const conn = new QuickBooksConnector();
+        let pulled = 0;
+        for (const entity of ['parties', 'items', 'invoices'] as const) {
+          pulled += (await conn.sync(c.org_id, c.id, entity)).pulled;
+        }
+        synced.push({ orgId: c.org_id, connector: 'QuickBooks', pulled });
+      } else if (c.type === 'tally') {
+        const cfg = parseTallyServerConfig(c.config);
+        if (!cfg) continue; // desktop-agent tallies heartbeat on their own
+        const r = await tallySync(c.org_id, c.id, cfg);
+        const total = r.parties + r.items + r.vouchers;
+        if (total === 0 && r.errors.length) {
+          failures.push({ orgId: c.org_id, orgName: orgName.get(c.org_id) ?? 'workspace', connector: 'Tally', detail: r.errors[0] ?? 'no records pulled' });
+        } else {
+          synced.push({ orgId: c.org_id, connector: 'Tally', pulled: total });
+        }
+      }
+    } catch (e) {
+      failures.push({
+        orgId: c.org_id,
+        orgName: orgName.get(c.org_id) ?? 'workspace',
+        connector: c.type,
+        detail: e instanceof Error ? e.message.slice(0, 200) : 'sync threw',
+      });
+    }
+  }
+  return { synced, failures };
 }
 
 /** Run connector health monitoring for every org; record failures in audit. */

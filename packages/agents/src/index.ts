@@ -22,6 +22,8 @@ export { extractWeighbridgeFromText, extractWeighbridgeFromImage, processWeighbr
 export type { WeighbridgeTicket, WeighbridgeIntakeResult } from './weighbridge.js';
 export { checkExportDeadlines, draftBuyerFollowUp, sendBuyerFollowUp, exportFollowupLines } from './exports.js';
 export type { ExportDeadline, FollowUpDraft } from './exports.js';
+export { generateEInvoice, eInvoiceStatus } from './einvoice.js';
+export type { EInvoiceStatus, GenerateResult } from './einvoice.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';
