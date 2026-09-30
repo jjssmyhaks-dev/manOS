@@ -5,6 +5,7 @@ import { getModelConfig } from './models.js';
 import { scanAnomalies, anomalyLines } from './anomalies.js';
 import { runMrp } from './mrp.js';
 import { predictDeliveryDelays, delayRiskLines, forecastCash, cashForecastLines } from './insights.js';
+import { checkExportDeadlines, exportFollowupLines } from './exports.js';
 
 /**
  * Digest agent (PRD F3): scheduled summary (sales, cash, overdue, low stock,
@@ -126,6 +127,13 @@ export async function generateDigest(orgId: string): Promise<Digest> {
   try {
     const cash = await forecastCash(orgId);
     sections.push({ key: 'cash_outlook', title: '💰 Cash outlook', lines: cashForecastLines(cash) });
+  } catch {}
+
+  // F9 export pack: LUT/IEC expiry + pending shipment documents
+  try {
+    const deadlines = await checkExportDeadlines(orgId);
+    const lines = exportFollowupLines(deadlines);
+    if (lines.length) sections.push({ key: 'export_docs', title: '🚢 Export documents', lines });
   } catch {}
 
   const narrativeFallback = [

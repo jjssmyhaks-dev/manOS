@@ -131,6 +131,27 @@ policies in **Settings**. No environment variables needed in dev.
 - **metric** ×2 — receivables sanity, overdue ageing-bucket arithmetic
 - **guardrail** ×2 — prompt-injection flagging, benign PO non-flagging
 
+## PRD v2 wedge (trust-and-voice strategy)
+
+Positioning per **PRD v2**: win on (1) a customer-facing trust/observability layer,
+(2) Indic voice on WhatsApp, (3) the scrap/waste and exports verticals — not on
+matching TranZact's full ERP surface.
+
+- **F4 AI Activity (the trust layer)**: every agent action lands on `/activity` with a
+  one-line human summary, the data sources it read, and why it acted. Executed actions
+  are **undoable for 24h** (created records are cancelled, never deleted); 👍/👎 feedback
+  feeds the eval set. Searchable; drafts awaiting approval appear on the timeline too.
+  Schema: `agent_actions` (summary, sources, reason, undone_at, feedback) — a product
+  surface, not an ops table.
+- **F8 Scrap/waste pack**: weighbridge ticket → WhatsApp photo (vision) or typed text
+  ("gross 5420 tare 1220 grade MS solid from Ramesh") → seller match + grade rate from
+  the rate card → purchase entry **drafted through the policy engine** → owner approves
+  from web or WhatsApp → stock ledger updated; Tally sync follows. Missing rate or
+  unknown seller are flagged in the reply, never guessed.
+- **F9 Export pack**: LUT/IEC expiry + pending packing-list/commercial-invoice watch →
+  buyer follow-up drafts queued via policy → digest section "🚢 Export documents".
+- Data stays on **Neon Postgres** (pgvector auto-migration); Supabase is not used.
+
 ## Design notes
 
 - **Deterministic first**: business logic lives in tools/SQL; the LLM plans and explains.

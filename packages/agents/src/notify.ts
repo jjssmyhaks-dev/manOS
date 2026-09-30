@@ -216,9 +216,9 @@ export function pendingListMessage(rows: Array<{ id: string; action_type: string
   ].filter(Boolean).join('\n');
 }
 
-/** Resolve an APPR-xxxxxxxx short code (or full id) back to the approval. */
+/** Resolve an APPR-xxxxxxxx short code (or full id, dashes optional) back to the approval. */
 export async function resolveApprovalByCode(orgId: string, code: string): Promise<string | null> {
-  const bare = code.replace(/^APPR-/i, '');
+  const bare = code.replace(/^APPR-/i, '').replace(/-/g, '');
   const rows = await query<{ id: string }>(
     "select id from approvals where org_id = $1 and status = 'pending' and replace(id::text,'-','') like $2 limit 2",
     [orgId, `${bare}%`]

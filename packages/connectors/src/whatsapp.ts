@@ -12,6 +12,8 @@ export interface WhatsAppInboundMessage {
   text?: string;
   voiceMediaId?: string;
   voiceMimeType?: string;
+  imageMediaId?: string;
+  imageMimeType?: string;
   type: string;
   messageId: string;
   timestamp: string;
@@ -36,6 +38,7 @@ export function parseWebhook(body: unknown): WhatsAppInboundMessage[] {
             from: string; id: string; timestamp: string; type: string;
             text?: { body?: string };
             audio?: { id?: string; mime_type?: string };
+            image?: { id?: string; mime_type?: string };
           }>;
         };
       }>;
@@ -53,6 +56,8 @@ export function parseWebhook(body: unknown): WhatsAppInboundMessage[] {
           text: msg.text?.body,
           voiceMediaId: msg.audio?.id,
           voiceMimeType: msg.audio?.mime_type,
+          imageMediaId: msg.image?.id,
+          imageMimeType: msg.image?.mime_type,
           messageId: msg.id,
           timestamp: msg.timestamp,
         });
@@ -76,6 +81,26 @@ export function whatsappEnvConfig(): { token: string | null; phoneNumberId: stri
   // recorded + audited but not delivered. Keeps dev/demo safe and free.
   const echo = process.env.WHATSAPP_ECHO === '1' || !token || !phoneNumberId;
   return { token, phoneNumberId, echo, graphVersion: process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0' };
+}
+
+/**
+ * Download inbound media (voice note / ticket photo) from Meta's CDN:
+ * GET /{media-id} returns a short-lived URL, then download the bytes.
+ */
+export async function fetchWhatsappMedia(mediaId: string, token: string, graphVersion = 'v21.0'): Promise<{ ok: boolean; base64?: string; mimeType?: string; error?: string }> {
+  try {
+    const meta = await fetch(`https://graph.facebook.com/${graphVersion}/${mediaId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const m = (await meta.json().catch(() => ({}))) as { url?: string; mime_type?: string; error?: { message?: string } };
+    if (!meta.ok || !m.url) return { ok: false, error: m.error?.message ?? `media metadata HTTP ${meta.status}` };
+    const bin = await fetch(m.url, { headers: { authorization: `Bearer ${token}` } });
+    if (!bin.ok) return { ok: false, error: `media download HTTP ${bin.status}` };
+    const buf = Buffer.from(await bin.arrayBuffer());
+    return { ok: true, base64: buf.toString('base64'), mimeType: m.mime_type ?? 'application/octet-stream' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**

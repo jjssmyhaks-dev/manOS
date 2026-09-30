@@ -5,12 +5,13 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import {
   MessageSquareText, LayoutDashboard, FileText, ShoppingCart, BellRing,
-  CalendarClock, Plug, ScrollText, Settings, Factory,
+  CalendarClock, Plug, ScrollText, Settings, Factory, ActivityIcon,
 } from 'lucide-react';
 
 const NAV = [
   { href: '/chat', label: 'Chat', icon: MessageSquareText },
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/activity', label: 'AI Activity', icon: ActivityIcon },
   { href: '/documents', label: 'Documents', icon: FileText },
   { href: '/procurement', label: 'Procurement', icon: ShoppingCart },
   { href: '/collections', label: 'Collections', icon: BellRing },

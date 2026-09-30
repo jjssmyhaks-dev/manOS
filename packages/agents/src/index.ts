@@ -16,6 +16,12 @@ export { proposeTopRemediation, proposeRemediation, decideProposal } from './rem
 export type { RemediationProposal, ProposalOutcome } from './remediation.js';
 export { runDueAgentJobs, runAgentJobNow, listAgentJobs, addAgentJob, setAgentJobEnabled } from './agent-jobs.js';
 export type { AgentJob, AgentJobRunResult } from './agent-jobs.js';
+export { recordAgentAction, listActivity, undoAgentAction, setActionFeedback, withinUndoWindow, undoWindowText, UNDO_WINDOW_MINUTES } from './activity.js';
+export type { AgentActionRow, ActionSource, RecordAgentActionInput, UndoResult, ActivityListOpts } from './activity.js';
+export { extractWeighbridgeFromText, extractWeighbridgeFromImage, processWeighbridgeTicket, gradeRate, looksLikeWeighbridgeText, WeighbridgeTicketSchema } from './weighbridge.js';
+export type { WeighbridgeTicket, WeighbridgeIntakeResult } from './weighbridge.js';
+export { checkExportDeadlines, draftBuyerFollowUp, sendBuyerFollowUp, exportFollowupLines } from './exports.js';
+export type { ExportDeadline, FollowUpDraft } from './exports.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';

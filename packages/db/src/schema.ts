@@ -263,6 +263,28 @@ create table if not exists notifications (
 -- older deployments created notifications without result; patch in place
 alter table notifications add column if not exists result jsonb;
 
+-- F4 trust layer: every agent action as a human-readable activity entry.
+-- This is a product surface — summary/sources/reason are written for the
+-- owner, not for ops. undo window enforced in code (default 24h).
+create table if not exists agent_actions (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  actor text not null default 'agent',
+  action_type text not null, -- reminder|credit_note|purchase_entry|so_create|rfq|voucher_push|digest_send|...
+  entity_type text,
+  entity_id text,
+  summary text not null, -- one-line human summary shown on the timeline
+  reason text, -- why the agent did it (confidence/reasoning in plain words)
+  sources jsonb not null default '[]'::jsonb, -- what data it read: [{type,label,ref}]
+  status text not null default 'done', -- draft|awaiting_approval|executed|failed|undone
+  executed_at timestamptz,
+  undone_at timestamptz,
+  undo_of uuid,
+  feedback text, -- up|down (thumbs feed the eval set)
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 -- WhatsApp media (voice notes): webhook stores the id; the media fetch fills
 -- the URL so the STT pipeline can download and transcribe it
 create table if not exists wa_media (

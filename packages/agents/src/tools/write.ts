@@ -65,8 +65,104 @@ function previewFor(action: string, payload: Record<string, unknown>): string {
   }
 }
 
-/** Execute an approved action (also used by the approvals API). */
+/** Human-readable summary + sources per action type (the trust layer). */
+function activityFor(actionType: string, payload: Record<string, unknown>): { summary: string; reason?: string; sources: Array<{ type: string; label: string; ref?: string }> } {
+  const p = payload as Record<string, string | number | undefined>;
+  switch (actionType) {
+    case 'send_reminder':
+      return {
+        summary: `Sent a ${p.channel ?? 'WhatsApp'} payment reminder to ${p.customer ?? 'the customer'} for ${p.invoice ?? 'their invoice'} (₹${Number(p.amount ?? 0).toLocaleString('en-IN')}, ${p.days ?? 0} days overdue)`,
+        sources: [{ type: 'invoice', label: `Invoice ${p.invoice}`, ref: p.invoiceId ? String(p.invoiceId) : undefined }],
+      };
+    case 'send_rfq':
+      return {
+        summary: `Sent an RFQ to ${p.vendor ?? 'the vendor'} for ${p.qty ?? 0} × ${p.item ?? 'the item'}`, 
+        sources: [{ type: 'item', label: `Item ${p.item}`, ref: p.itemId ? String(p.itemId) : undefined }],
+      };
+    case 'create_po':
+      return {
+        summary: `Created purchase order ${p.poNo ?? ''} — ${p.qty ?? 0} × ${p.itemName ?? p.item ?? ''} from ${p.vendorName ?? p.vendor ?? ''} @ ₹${p.rate ?? 0}`.replace('  ', ' '),
+        sources: [{ type: 'purchase_order', label: `Vendor ${p.vendorName ?? p.vendor}`, ref: p.vendorId ? String(p.vendorId) : undefined }],
+      };
+    case 'so_create':
+      return {
+        summary: `Created a sales order for ${p.customer ?? 'the customer'} — ${p.qty ?? 0} × ${p.item ?? ''} @ ₹${p.rate ?? 0}`.replace('  ', ' '),
+        sources: [{ type: 'document', label: p.poNumber ? `PO ${p.poNumber}` : 'chat / intake', ref: p.customerId ? String(p.customerId) : undefined }],
+      };
+    case 'credit_note_draft':
+      return {
+        summary: `Drafted a credit note of ₹${Number(p.amount ?? 0).toLocaleString('en-IN')} against ${p.invoice ?? 'the invoice'} for ${p.customer ?? 'the customer'} — duplicate billing check`,
+        reason: String(p.reason ?? 'Possible duplicate billing detected'),
+        sources: [{ type: 'invoice', label: `Invoice ${p.invoice}`, ref: p.invoiceId ? String(p.invoiceId) : undefined }],
+      };
+    case 'grn_create':
+      return { summary: `Posted a goods receipt of ${p.qty ?? 0} units into stock`, sources: [] };
+    case 'weighbridge_entry':
+      return {
+        summary: `Recorded weighbridge entry — ${Number(p.netKg ?? 0).toLocaleString('en-IN')} kg of ${p.grade ?? p.item ?? 'scrap'} from ${p.seller ?? 'the seller'}${p.rate ? ` @ ₹${p.rate}/kg = ₹${Number(p.amount ?? 0).toLocaleString('en-IN')}` : ''}`, 
+        reason: p.ticketNo ? `From weighbridge ticket ${p.ticketNo}${p.via === 'whatsapp-photo' ? ' (WhatsApp photo)' : ''}` : undefined,
+        sources: [
+          { type: 'document', label: p.ticketNo ? `Ticket ${p.ticketNo}` : 'Weighbridge slip' },
+          ...(p.itemId ? [{ type: 'item' as const, label: `Rate card: ${p.item}`, ref: String(p.itemId) }] : []),
+        ],
+      };
+    case 'buyer_followup':
+      return {
+        summary: `Sent export follow-up to ${p.buyer ?? 'the buyer'} — ${p.docSummary ?? 'documents on track'}`,
+        sources: [{ type: 'shipment', label: `Shipment ${p.shipmentCode ?? ''}` }],
+      };
+    case 'job_card_update':
+      return { summary: `Updated job card — output ${p.outputQty ?? 0}, rejects ${p.rejectQty ?? 0}`, sources: [{ type: 'job_card', label: 'Job card', ref: p.jobCardId ? String(p.jobCardId) : undefined }] };
+    case 'tally_push':
+      return { summary: `Queued voucher ${p.voucherNo ?? ''} for the Tally connector`, sources: [] };
+    default:
+      return { summary: `${actionType.replace(/_/g, ' ')}`, sources: [] };
+  }
+}
+
+/**
+ * Execute an approved action (also used by the approvals API) — and record
+ * it on the owner-facing AI Activity timeline (F4 trust layer).
+ */
 export async function executeAction(
+  orgId: string,
+  actionType: string,
+  payload: Record<string, unknown>
+): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  const res = await executeActionInner(orgId, actionType, payload);
+  if (res.ok) {
+    try {
+      const { recordAgentAction } = await import('../activity.js');
+      const a = activityFor(actionType, payload);
+      const result = (res.result ?? {}) as { poId?: string; soId?: string; grnId?: string; creditNoteId?: string; purchaseEntryId?: string };
+      // what undo needs to reverse, per action kind
+      const undoInfo: { kind: 'created_record' | 'outbound'; entityType?: string; entityId?: string } =
+        actionType === 'create_po' ? { kind: 'created_record', entityType: 'purchase_entry', entityId: result.poId } :
+        actionType === 'so_create' ? { kind: 'created_record', entityType: 'sales_order', entityId: result.soId } :
+        actionType === 'grn_create' ? { kind: 'created_record', entityType: 'grn', entityId: result.grnId } :
+        actionType === 'credit_note_draft' ? { kind: 'created_record', entityType: 'credit_note', entityId: result.creditNoteId } :
+        actionType === 'weighbridge_entry' ? { kind: 'created_record', entityType: 'purchase_entry', entityId: result.purchaseEntryId } :
+        { kind: 'outbound' };
+      await recordAgentAction({
+        orgId,
+        actionType,
+        summary: a.summary,
+        reason: a.reason ?? (payload.__remediationTitle ? `Auto-fix for: ${String(payload.__remediationTitle)}` : undefined),
+        sources: a.sources,
+        entityType: undoInfo.entityType ?? (actionType === 'send_reminder' ? 'invoice' : undefined),
+        entityId: undoInfo.entityId ?? ((payload.invoiceId ?? payload.jobCardId) as string | undefined),
+        status: 'executed',
+        metadata: { actionType, undo: undoInfo },
+      });
+    } catch {
+      // activity logging must never break an execution
+    }
+  }
+  return res;
+}
+
+/** Inner executor (the original switch). */
+async function executeActionInner(
   orgId: string,
   actionType: string,
   payload: Record<string, unknown>
@@ -155,16 +251,47 @@ export async function executeAction(
       });
       return { ok: true, result: { soId: e.id, soNo: e.code } };
     }
+    case 'weighbridge_entry': {
+      // F8 scrap pack: many-small-seller purchase entry from a weighbridge
+      // ticket. Recorded as a purchase entry + inward stock movement; posted
+      // to Tally only after approval via the connector.
+      const p = payload as {
+        sellerId?: string; seller?: string; itemId?: string; item?: string; grade?: string;
+        netKg?: number; grossKg?: number; tareKg?: number; rate?: number; amount?: number;
+        ticketNo?: string; vehicleNo?: string; date?: string; via?: string;
+      };
+      const e = await insertEntity({
+        orgId, type: 'purchase_entry', status: 'recorded', partyId: p.sellerId, itemId: p.itemId,
+        qty: p.netKg ?? 0, rate: p.rate ?? 0, amount: p.amount ?? 0,
+        date: p.date ?? new Date().toISOString().slice(0, 10),
+        source: 'agent',
+        data: {
+          grade: p.grade ?? null, grossKg: p.grossKg ?? null, tareKg: p.tareKg ?? null,
+          ticketNo: p.ticketNo ?? null, vehicleNo: p.vehicleNo ?? null, seller: p.seller ?? null, via: p.via ?? 'web',
+        },
+      });
+      await insertEntity({
+        orgId, type: 'stock_ledger', itemId: p.itemId, qty: p.netKg ?? 0,
+        date: p.date ?? new Date().toISOString().slice(0, 10), source: 'agent',
+        data: { kind: 'inward_scrap', purchaseEntryId: e.id, grade: p.grade ?? null },
+      });
+      return { ok: true, result: { purchaseEntryId: e.id, code: e.code } };
+    }
+    case 'buyer_followup': {
+      // F9 export pack: approved buyer follow-up message (queued for dispatch)
+      const { sendBuyerFollowUp } = await import('../exports.js');
+      return sendBuyerFollowUp(orgId, payload);
+    }
     case 'grn_create': {
       const p = payload as { poId?: string; itemId?: string; qty?: number; warehouse?: string };
       const e = await insertEntity({
         orgId, type: 'grn', status: 'posted', itemId: p.itemId, qty: p.qty ?? 0, source: 'agent',
         data: { poId: p.poId, warehouse: p.warehouse },
       });
-      await query(
-        `insert into entities (org_id, type, item_id, qty, date, source, data) values ($1,'stock_ledger',$2,$3,current_date,'agent', $4::jsonb)`,
-        [orgId, p.itemId ?? null, p.qty ?? 0, JSON.stringify({ kind: 'inward', grnId: e.id })]
-      );
+      await insertEntity({
+        orgId, type: 'stock_ledger', itemId: p.itemId, qty: p.qty ?? 0,
+        source: 'agent', data: { kind: 'inward', grnId: e.id },
+      });
       return { ok: true, result: { grnId: e.id } };
     }
     case 'job_card_update': {

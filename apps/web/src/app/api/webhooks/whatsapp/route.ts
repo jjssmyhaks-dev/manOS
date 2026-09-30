@@ -4,6 +4,7 @@ import {
   whatsappEnvConfig,
   sendWhatsAppText,
   transcribeVoiceNote,
+  fetchWhatsappMedia,
 } from '@factory/connectors';
 import { query, audit } from '@factory/db';
 import {
@@ -12,6 +13,10 @@ import {
   parseApprovalCommand,
   decideApprovalFromWhatsApp,
   pendingListMessage,
+  extractWeighbridgeFromText,
+  extractWeighbridgeFromImage,
+  processWeighbridgeTicket,
+  looksLikeWeighbridgeText,
 } from '@factory/agents';
 import { executeAction } from '@factory/agents';
 
@@ -80,7 +85,9 @@ const HELP_TEXT = [
   '• *pending* — see what is waiting for your approval',
   '• *approve APPR-xxxxxxxx* — do it',
   '• *reject APPR-xxxxxxxx* — don\u2019t',
+  '• *activity* — the last few things I did',
   '',
+  'Send weighbridge tickets as a photo or just type: *gross 5420 tare 1220 grade MS solid from Ramesh*',
   'Voice notes work too — bas bol do 🎙️',
 ].join('\n');
 
@@ -183,6 +190,34 @@ export async function POST(req: Request) {
       continue;
     }
 
+    // --- photos: weighbridge ticket intake (F8 scrap pack) -------------------
+    if (msg.type === 'image' && msg.imageMediaId) {
+      const target = await resolveInboundOrg(msg.from);
+      if (!target) {
+        handled.push(`image:${msg.messageId}:no-org`);
+        continue;
+      }
+      const media = await fetchWhatsappMedia(msg.imageMediaId, process.env.WHATSAPP_TOKEN ?? '');
+      if (!media.ok || !media.base64) {
+        await replyTo(msg.from, 'I could not download that photo — please try sending it again.');
+        handled.push(`image:${msg.messageId}:media-error`);
+        continue;
+      }
+      try {
+        const ticket = await extractWeighbridgeFromImage(media.base64, media.mimeType);
+        const result = await processWeighbridgeTicket(target.orgId, ticket, { from: msg.from, via: 'whatsapp-photo' });
+        await replyTo(msg.from, result.reply);
+        handled.push(`weighbridge:${msg.messageId}:${result.ok ? 'ok' : 'parse-error'}`);
+      } catch (e) {
+        const msg2 = e instanceof Error ? e.message : 'Could not read the ticket';
+        await replyTo(msg.from, /live AI key/i.test(msg2)
+          ? 'Reading ticket photos needs the live AI key (operator setting). For now, type it: *gross 5420 tare 1220 grade MS solid from Ramesh*'
+          : `I could not read the ticket clearly (${msg2.slice(0, 80)}). Type the weights instead: *gross 5420 tare 1220 grade MS solid from Ramesh*`);
+        handled.push(`weighbridge:${msg.messageId}:error`);
+      }
+      continue;
+    }
+
     // --- text messages --------------------------------------------------------
     if (msg.text) {
       const cmd = parseApprovalCommand(msg.text);
@@ -191,6 +226,31 @@ export async function POST(req: Request) {
         await replyTo(msg.from, HELP_TEXT);
         handled.push(`help:${msg.messageId}`);
         continue;
+      }
+
+      if (cmd.cmd === 'other' && /^activity$/i.test(msg.text.trim())) {
+        const target = await resolveInboundOrg(msg.from);
+        if (target) {
+          const { listActivity } = await import('@factory/agents');
+          const recent = await listActivity(target.orgId, { limit: 5 });
+          const body = recent.length
+            ? ['🧾 *Last things I did*', '', ...recent.map((a) => `• ${a.summary}`)].join('\n')
+            : 'Nothing on the activity log yet.';
+          await replyTo(msg.from, body);
+        }
+        handled.push(`activity:${msg.messageId}`);
+        continue;
+      }
+
+      if (cmd.cmd === 'other' && looksLikeWeighbridgeText(msg.text)) {
+        const target = await resolveInboundOrg(msg.from);
+        if (target) {
+          const ticket = extractWeighbridgeFromText(msg.text);
+          const result = await processWeighbridgeTicket(target.orgId, ticket, { from: msg.from, via: 'whatsapp-text' });
+          await replyTo(msg.from, result.reply);
+          handled.push(`weighbridge:${msg.messageId}:${result.ok ? 'ok' : 'parse-error'}`);
+          continue;
+        }
       }
 
       if (cmd.cmd === 'pending') {
