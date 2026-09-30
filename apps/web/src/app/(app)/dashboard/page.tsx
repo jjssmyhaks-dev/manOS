@@ -8,6 +8,7 @@ import { DashboardClient } from '@/components/dashboard-client';
 import { ConnectorHealthCard } from '@/components/connector-health-card';
 import { AnomaliesCard } from '@/components/anomalies-card';
 import { OverrideCard } from '@/components/override-card';
+import { OnboardingChecklist } from '@/components/onboarding-checklist';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,8 @@ export default async function DashboardPage() {
           </Card>
         ))}
       </div>
+
+      <OnboardingChecklist />
 
       <ConnectorHealthCard report={health} />
 

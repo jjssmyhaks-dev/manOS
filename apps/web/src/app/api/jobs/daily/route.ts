@@ -5,6 +5,8 @@ import {
   scanAnomalies,
   proposeTopRemediation,
   runDueAgentJobs,
+  generateAllPilotDigests,
+  pilotDigestText,
   type AgentJobRunResult,
 } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
@@ -124,11 +126,44 @@ export async function POST(req: Request) {
   }
 
   const reports = await runMonitoring();
+
+  // weekly pilot feedback digest — the case-study raw material (queued as a
+  // notification every Monday UTC; POST /api/jobs/pilot-digest forces a run)
+  let pilotDigest: Awaited<ReturnType<typeof runPilotDigests>> | null = null;
+  try {
+    pilotDigest = await runPilotDigests();
+  } catch (e) {
+    console.error('pilot digest failed:', e);
+  }
+
   return Response.json({
     ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length,
     nightlySync: { synced: syncReport.synced.length, failures: syncReport.failures.length },
     einvoicing: einvoicing ? { generated: einvoicing.generated.length, skipped: einvoicing.skipped, failed: einvoicing.failures.length } : null,
+    pilotDigest,
   });
+}
+
+/**
+ * Weekly pilot feedback digest: usage stats + override trend + top correction
+ * themes per org, queued for the operator under template 'pilot_digest'.
+ * Runs on Mondays (UTC) inside the nightly cron; /api/jobs/pilot-digest
+ * forces it any time.
+ */
+async function runPilotDigests(): Promise<{ day: string; orgs: number }> {
+  const day = new Date().getUTCDay(); // 1 = Monday
+  if (day !== 1) return { day: 'not-monday', orgs: 0 };
+  const digests = await generateAllPilotDigests();
+  for (const r of digests) {
+    await query(
+      `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'email',$2,'pilot_digest',$3,'queued')`,
+      [r.orgId, 'operator@factoryaios.in', pilotDigestText(r)]
+    );
+  }
+  await audit(digests[0]?.orgId ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.pilot_digest', {
+    metadata: { orgs: digests.length },
+  });
+  return { day: 'monday', orgs: digests.length };
 }
 
 /** Nightly pull for every configured accounting connector; failures collected for alerts. */

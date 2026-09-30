@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { ActivityIcon, SearchIcon, Undo2Icon, ThumbsUpIcon, ThumbsDownIcon, CheckCircle2Icon, Clock3Icon, XCircleIcon } from 'lucide-react';
+import { ActivityIcon, SearchIcon, Undo2Icon, ThumbsUpIcon, ThumbsDownIcon, CheckCircle2Icon, Clock3Icon, XCircleIcon, DownloadIcon, FileTextIcon } from 'lucide-react';
 
 interface ActionRow {
   id: string;
@@ -102,6 +102,23 @@ export function ActivityClient() {
           />
         </div>
         <Button size="sm" variant="outline" onClick={() => load(search || undefined)}>Search</Button>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">Export for your accountant:</span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => window.open(`/api/activity/export?format=csv${search ? `&q=${encodeURIComponent(search)}` : ''}`, '_blank')}
+          >
+            <DownloadIcon className="mr-1 h-3.5 w-3.5" /> CSV
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => window.open(`/api/activity/export?format=pdf${search ? `&q=${encodeURIComponent(search)}` : ''}`, '_blank')}
+          >
+            <FileTextIcon className="mr-1 h-3.5 w-3.5" /> PDF
+          </Button>
+        </div>
       </div>
 
       {msg && (

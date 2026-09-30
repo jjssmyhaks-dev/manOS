@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { cookies } from 'next/headers';
 import { query } from '@factory/db';
 import { seedDemoData } from '@factory/db';
+import { setShadowMode, startOnboarding } from '@factory/core';
 
 /**
  * Email + password auth (PRD F1 workspaces, now real): scrypt password
@@ -61,6 +62,11 @@ export async function signup(input: SignupInput): Promise<AuthResult> {
 
   // dedicated workspace with sample data under their own company name
   const seeded = await seedDemoData(slug, { name: company, vertical: 'fabrication' });
+
+  // pilot defaults (PRD v2): shadow mode on — the agent drafts, never executes
+  // until the owner flips the switch; stamp the guided-setup start.
+  await setShadowMode(seeded.orgId, true);
+  await startOnboarding(seeded.orgId);
 
   const userRows = await query<{ id: string }>(
     `insert into users (org_id, email, name, role, password_hash) values ($1,$2,$3,'owner',$4) returning id`,

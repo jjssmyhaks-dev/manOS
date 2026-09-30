@@ -16,7 +16,7 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 
 | PRD | Feature | Where |
 | --- | --- | --- |
-| F1 | Workspace / org context (multi-org, demo seed) | `apps/web/src/lib/session.ts`, `/settings` |
+| F1 | Workspace / org context (multi-org, demo seed) + pilot onboarding checklist | `apps/web/src/lib/session.ts`, `/settings` |
 | F2 | Chat over factory data (EN/Hindi/Hinglish) with citations | `/` chat home, `packages/agents/src/orchestrator.ts` |
 | F3 | Daily WhatsApp/email digest of the factory | `/digest`, `packages/agents/src/digest.ts`, `POST /api/jobs/daily` |
 | F4 | Document intake: PO/invoice parsing → review queue → SO | `/documents`, `packages/agents/src/extraction.ts` |
@@ -32,6 +32,7 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 | — | WhatsApp as the product: inbound questions answered by the agent, approvals decided from the phone, voice notes via Sarvam STT | `apps/web/src/app/api/webhooks/whatsapp`, `packages/agents/src/notify.ts` |
 | — | Closed-loop remediation: anomaly → drafted fix (reminder / RFQ / credit note) → approval → execution → WhatsApp outcome | `packages/agents/src/remediation.ts` |
 | — | Conversational BI: `ask_data` group/aggregate over entity tables, rendered as inline charts in chat | `packages/agents/src/tools/read.ts`, `apps/web/src/components/ai-elements/chart.tsx` |
+| — | Weekly pilot feedback digest: usage, override trend, correction themes → operator (case-study raw material) | `packages/agents/src/pilot-digest.ts`, `/api/jobs/pilot-digest` |
 | — | Learning memory: corrections become reviewable org facts, applied in answers *and enforced in drafts* (price-floor guard on POs/SOs) | `packages/agents/src/memory.ts`, `remember` tool, `priceRulesFromFacts` |
 | — | Proactive anomaly agent: price variance, duplicate invoices (→ credit-note drafts), receivables spike; fixes reported to WhatsApp on decision | `packages/agents/src/anomalies.ts`, `packages/agents/src/remediation.ts` |
 | — | Demand forecast + BOM MRP buy suggestions (4-week horizon) | `packages/agents/src/mrp.ts`, `/procurement`, `run_mrp` agent tool |
@@ -104,7 +105,7 @@ packages/
 ```bash
 npm install
 npm run dev          # apps/web on http://localhost:3100
-npm test             # eval suite (7 golden cases) via tsx
+npm test             # eval suite (11 golden cases) via tsx
 npm run build        # production build of apps/web
 ```
 
@@ -143,6 +144,10 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 - **extraction** ×3 — PO parsing completeness, missing-field flagging, amount normalisation
 - **metric** ×2 — receivables sanity, overdue ageing-bucket arithmetic
 - **guardrail** ×2 — prompt-injection flagging, benign PO non-flagging
+- **shadow_mode** ×1 — auto actions become ask while shadow mode is on; execute live when off
+- **einvoicing** ×1 — IRN generation via the GSP sandbox, persistence, idempotent re-generation
+- **ewb_validation** ×1 — EWB rejects garbage vehicle/pincodes, requires IRN first, generates valid
+- **override_rate** ×1 — week bucketing + override % arithmetic, trend classification (the PRD exit metric)
 
 ## PRD v2 wedge (trust-and-voice strategy)
 
@@ -154,6 +159,8 @@ matching TranZact's full ERP surface.
   one-line human summary, the data sources it read, and why it acted. Executed actions
   are **undoable for 24h** (created records are cancelled, never deleted); 👍/👎 feedback
   feeds the eval set. Searchable; drafts awaiting approval appear on the timeline too.
+  Exportable as **CSV or PDF** (`/api/activity/export`) so design partners can share the
+  audit trail with their accountants — exports are audited, oldest-first, filters applied.
   Schema: `agent_actions` (summary, sources, reason, undone_at, feedback) — a product
   surface, not an ops table.
 - **F8 Scrap/waste pack**: weighbridge ticket → WhatsApp photo (vision) or typed text

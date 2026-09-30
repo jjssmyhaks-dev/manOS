@@ -28,6 +28,8 @@ export { generateEWayBill } from './eway.js';
 export type { EWbStatus } from './eway.js';
 export { overrideRateReport } from './override-rate.js';
 export type { OverrideReport, WeekOverride } from './override-rate.js';
+export { generatePilotDigest, generateAllPilotDigests, pilotDigestText } from './pilot-digest.js';
+export type { PilotDigestReport, ThemeCount } from './pilot-digest.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';

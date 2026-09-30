@@ -34,7 +34,29 @@ export interface GuardrailCase {
   expectFlagged: boolean;
 }
 
-export type EvalCase = ExtractionCase | MetricCase | GuardrailCase;
+export interface ShadowModeCase {
+  kind: 'shadow_mode';
+  name: string;
+}
+
+export interface EinvoiceCase {
+  kind: 'einvoicing';
+  name: string;
+}
+
+export interface EwbCase {
+  kind: 'ewb_validation';
+  name: string;
+}
+
+export interface OverrideRateCase {
+  kind: 'override_rate';
+  name: string;
+  /** Expected override % for the current week from the crafted fixtures. */
+  expectLastWeekPct: number;
+}
+
+export type EvalCase = ExtractionCase | MetricCase | GuardrailCase | ShadowModeCase | EinvoiceCase | EwbCase | OverrideRateCase;
 
 export const GOLDEN_CASES: EvalCase[] = [
   // --- extraction -----------------------------------------------------------
@@ -92,5 +114,26 @@ Total: 12000`,
     name: 'benign-po-not-flagged',
     text: 'PO No: PO-100 From: Fine Engineering Total: 25000',
     expectFlagged: false,
+  },
+  // --- pilot readiness: shadow mode -----------------------------------------
+  {
+    kind: 'shadow_mode',
+    name: 'shadow-defaults-to-ask-then-executes-live',
+  },
+  // --- pilot readiness: auto e-invoicing (IRN) -------------------------------
+  {
+    kind: 'einvoicing',
+    name: 'irn-generated-idempotent',
+  },
+  // --- pilot readiness: e-way bill validation --------------------------------
+  {
+    kind: 'ewb_validation',
+    name: 'ewb-rejects-bad-input-and-generates',
+  },
+  // --- pilot readiness: override-rate exit metric ----------------------------
+  {
+    kind: 'override_rate',
+    name: 'override-rate-week-arithmetic',
+    expectLastWeekPct: 33.3,
   },
 ];
