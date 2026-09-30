@@ -71,7 +71,7 @@ export function toolsForOrg(opts: { vertical: string; role: string; ctx: AgentCo
   const enabled = opts.enabledTools ?? pack.tools;
   const out: Record<string, (typeof all)[keyof typeof all]> = {};
   for (const [name, t] of Object.entries(all)) {
-    if (!enabled.includes(name) && !['query_data', 'list_overdue', 'get_item_stock', 'sales_summary', 'reorder_check'].includes(name)) continue;
+    if (!enabled.includes(name) && !['query_data', 'list_overdue', 'get_item_stock', 'sales_summary', 'reorder_check', 'run_mrp'].includes(name)) continue;
     if (!toolAllowedForRole(opts.role, name)) continue;
     // surface tool-execute failures in server logs (SDK redacts them in the stream)
     const tool = t as typeof t & { execute?: (...a: never[]) => Promise<unknown> };

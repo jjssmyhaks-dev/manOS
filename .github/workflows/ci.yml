@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck all packages
+        run: |
+          set -e
+          for p in packages/db packages/core packages/agents packages/connectors packages/evals apps/web; do
+            echo "::group::tsc $p"
+            npx tsc --noEmit -p "$p"
+            echo "::endgroup::"
+          done
+
+      - name: Eval suite (7 golden cases)
+        run: npm test -w packages/evals
+
+      - name: Production build
+        run: npm run build
+        env:
+          FACTORY_DB_MEMORY: '1' # keep the build hermetic — no disk PGlite writes

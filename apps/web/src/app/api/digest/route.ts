@@ -1,4 +1,4 @@
-import { generateDigest } from '@factory/agents';
+import { generateDigest, dispatchQueuedNotifications } from '@factory/agents';
 import { query, audit } from '@factory/db';
 import { getSession } from '@/lib/session';
 
@@ -25,5 +25,8 @@ export async function POST(req: Request) {
     );
   }
   await audit(s.orgId, 'system', 'digest.queued', { metadata: { channels: body.channels ?? ['web'] } });
-  return Response.json({ ok: true, queued: body.channels ?? ['web'], digest });
+
+  // WhatsApp rows go out immediately when credentials exist; echo mode in dev
+  const dispatch = (body.channels ?? ['web']).includes('whatsapp') ? await dispatchQueuedNotifications(s.orgId, { template: 'daily_digest' }) : null;
+  return Response.json({ ok: true, queued: body.channels ?? ['web'], digest, dispatch });
 }

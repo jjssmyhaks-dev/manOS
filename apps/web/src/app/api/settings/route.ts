@@ -1,6 +1,7 @@
 import { query, audit } from '@factory/db';
 import { setPolicy, getPolicyDecision } from '@factory/core';
-import { listFacts, addFact, setFactStatus } from '@factory/agents';
+import { listFacts, addFact, setFactStatus, getNotifySettings, saveNotifySettings, dispatchQueuedNotifications } from '@factory/agents';
+import { whatsappEnvConfig } from '@factory/connectors';
 import { getSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
@@ -16,9 +17,17 @@ export async function GET() {
   );
   const envKey = Boolean(process.env.OPENROUTER_API_KEY);
   const key = ai[0]?.api_key ?? null;
+  const notify = await getNotifySettings(s.orgId);
+  const wa = whatsappEnvConfig();
   return Response.json({
     policies,
     facts,
+    notify: {
+      owner_phone: notify.ownerPhone,
+      auto_send: notify.autoSend,
+      mode: wa.echo ? 'echo' : 'live',
+      phone_number_id_set: Boolean(wa.phoneNumberId),
+    },
     ai: {
       provider: ai[0]?.provider ?? 'openrouter',
       model_route: ai[0]?.model_route ?? 'default',
@@ -34,14 +43,32 @@ export async function GET() {
 export async function POST(req: Request) {
   const s = await getSession();
   const body = (await req.json()) as {
-    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_ai_config' | 'clear_ai_key';
+    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_ai_config' | 'clear_ai_key' | 'save_notify' | 'dispatch_now';
     actionType?: string;
     decision?: 'auto' | 'ask' | 'deny';
     fact?: string;
     factId?: string;
     apiKey?: string;
     modelRoute?: 'default' | 'budget';
+    ownerPhone?: string | null;
+    autoSend?: boolean;
   };
+
+  if (body.action === 'save_notify') {
+    // normalise to bare digits (E.164 without +) for the Cloud API
+    const digits = body.ownerPhone ? body.ownerPhone.replace(/[^0-9]/g, '') : null;
+    if (digits && (digits.length < 10 || digits.length > 15)) {
+      return Response.json({ error: 'Phone must be a valid number with country code, e.g. 919812345678' }, { status: 400 });
+    }
+    await saveNotifySettings(s.orgId, digits, Boolean(body.autoSend));
+    await audit(s.orgId, `user:${s.userName}`, 'settings.notify', { metadata: { auto_send: Boolean(body.autoSend), phone_set: Boolean(digits) } });
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === 'dispatch_now') {
+    const res = await dispatchQueuedNotifications(s.orgId);
+    return Response.json({ ok: true, ...res });
+  }
 
   if (body.action === 'set_policy' && body.actionType && body.decision) {
     await setPolicy(s.orgId, body.actionType, body.decision);

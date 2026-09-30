@@ -62,6 +62,12 @@ export async function seedDemoData(orgSlug = 'precision-metalworks'): Promise<{ 
   );
   const orgId = orgRows[0]!.id;
 
+  // Replace semantics (Settings: "Seeding replaces demo data"): drop the
+  // previous seed-generated entities so repeated seeding never duplicates
+  // rows. Non-seed data (Tally pulls, agent-created records, documents)
+  // is left untouched.
+  await query(`delete from entities where org_id=$1 and source='seed'`, [orgId], db);
+
   await query(
     `insert into users (org_id, email, name, role) values ($1,$2,$3,$4)
      on conflict (email) do nothing`,
@@ -277,6 +283,29 @@ export async function seedDemoData(orgSlug = 'precision-metalworks'): Promise<{ 
     );
   }
   counts.machines = 5;
+
+  // BOMs: first two finished items consume two components each (qty per unit)
+  // so the MRP engine can explode parent demand into component buy suggestions
+  for (let p = 0; p < 2; p++) {
+    for (let c = 0; c < 2; c++) {
+      await insertEntity(
+        {
+          orgId,
+          type: 'bom',
+          code: `BOM-${itemIds[p]!.slice(0, 6)}-${c}`,
+          source: 'seed',
+          data: {
+            parentId: itemIds[p]!,
+            childId: itemIds[2 + c]!, // distinct component items
+            qtyPerUnit: pick([1, 2, 4], rnd),
+            scrapPct: 0,
+          },
+        },
+        db
+      );
+    }
+  }
+  counts.boms = 4;
 
   return { orgId, counts };
 }

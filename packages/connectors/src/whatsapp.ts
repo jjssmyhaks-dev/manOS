@@ -63,3 +63,52 @@ export function parseWebhook(body: unknown): WhatsAppInboundMessage[] {
 export function buildOutboundText(to: string, body: string): Record<string, unknown> {
   return { messaging_product: 'whatsapp', to, type: 'text', text: { preview_url: false, body: body.slice(0, 4000) } };
 }
+
+// --- outbound delivery (WhatsApp Cloud API) ------------------------------------
+
+/** Runtime WhatsApp Cloud API configuration from env. */
+export function whatsappEnvConfig(): { token: string | null; phoneNumberId: string | null; echo: boolean; graphVersion: string } {
+  const token = process.env.WHATSAPP_TOKEN ?? process.env.WHATSAPP_ACCESS_TOKEN ?? null;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID ?? null;
+  // Echo mode: no credentials (or explicit WHATSAPP_ECHO=1) → sends are
+  // recorded + audited but not delivered. Keeps dev/demo safe and free.
+  const echo = process.env.WHATSAPP_ECHO === '1' || !token || !phoneNumberId;
+  return { token, phoneNumberId, echo, graphVersion: process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0' };
+}
+
+export interface WhatsAppSendResult {
+  ok: boolean;
+  messageId?: string;
+  error?: string;
+  /** raw provider response on error (truncated) */
+  detail?: string;
+}
+
+/**
+ * Send a WhatsApp text message via the Meta Cloud API.
+ * Throws only on unexpected failures; non-2xx responses are returned as
+ * { ok:false, error, detail } so callers can retry with backoff.
+ */
+export async function sendWhatsAppText(cfg: { token: string; phoneNumberId: string; graphVersion?: string }, to: string, body: string): Promise<WhatsAppSendResult> {
+  const version = cfg.graphVersion ?? 'v21.0';
+  let res: Response;
+  try {
+    res = await fetch(`https://graph.facebook.com/${version}/${cfg.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${cfg.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(buildOutboundText(to, body)),
+    });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  const raw = await res.text().catch(() => '');
+  if (!res.ok) {
+    return { ok: false, error: `Cloud API ${res.status}`, detail: raw.slice(0, 300) };
+  }
+  try {
+    const json = JSON.parse(raw) as { messages?: Array<{ id?: string }> };
+    return { ok: true, messageId: json.messages?.[0]?.id };
+  } catch {
+    return { ok: true };
+  }
+}

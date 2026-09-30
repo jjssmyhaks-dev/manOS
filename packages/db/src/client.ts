@@ -23,6 +23,44 @@ const g = globalThis as unknown as {
 let instance: PGlite | null = null;
 let ready: Promise<PGlite> | null = null;
 
+/**
+ * Fallback env loading: Next.js only reads .env.local from the app directory
+ * (apps/web), while CLI scripts and this monorepo keep one .env.local at the
+ * repo root. When DATABASE_URL is not already in the environment (and we are
+ * not forced in-memory), walk up from cwd and adopt the root file's value —
+ * so a single .env.local drives both `next dev` and tsx scripts.
+ */
+function adoptRootEnv(): void {
+  if (process.env.DATABASE_URL || process.env.FACTORY_DB_MEMORY === '1') return;
+  let dir = process.cwd();
+  for (let i = 0; i < 5; i++) {
+    const envPath = path.join(dir, '.env.local');
+    try {
+      if (fs.existsSync(envPath)) {
+        const raw = fs.readFileSync(envPath, 'utf8');
+        for (const lineRaw of raw.split(/\r?\n/)) {
+          const line = lineRaw.trim();
+          if (!line || line.startsWith('#')) continue;
+          const eq = line.indexOf('=');
+          if (eq <= 0) continue;
+          const key = line.slice(0, eq).trim();
+          const val = line.slice(eq + 1).trim().replace(/^"|"$/g, '');
+          if (key === 'DATABASE_URL' && val) {
+            process.env.DATABASE_URL = val;
+            return;
+          }
+        }
+      }
+    } catch {
+      /* ignore unreadable env files */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+adoptRootEnv();
+
 export function hasRemoteDb(): boolean {
   return Boolean(process.env.DATABASE_URL);
 }

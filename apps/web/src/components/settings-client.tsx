@@ -16,6 +16,12 @@ interface AiConfig {
   has_env_key: boolean;
   effective: string;
 }
+interface NotifyConfig {
+  owner_phone: string | null;
+  auto_send: boolean;
+  mode: 'echo' | 'live';
+  phone_number_id_set: boolean;
+}
 
 const ACTION_LABELS: Record<string, string> = {
   send_reminder: 'Send payment reminders',
@@ -39,12 +45,21 @@ export function SettingsClient() {
   const [ai, setAi] = useState<AiConfig | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notify, setNotify] = useState<NotifyConfig | null>(null);
+  const [phoneInput, setPhoneInput] = useState('');
+  const [autoSend, setAutoSend] = useState(false);
+  const [notifyMsg, setNotifyMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     const s = await fetch('/api/settings').then((r) => r.json());
     setPolicies(s.policies ?? []);
     setFacts(s.facts ?? []);
     setAi(s.ai ?? null);
+    if (s.notify) {
+      setNotify(s.notify);
+      setAutoSend(Boolean(s.notify.auto_send));
+      setPhoneInput(s.notify.owner_phone ?? '');
+    }
     const o = await fetch('/api/org').then((r) => r.json());
     setOrgs(o.orgs ?? []);
     setCurrent(o.session?.orgSlug ?? null);
@@ -99,6 +114,32 @@ export function SettingsClient() {
       body: JSON.stringify({ action: 'clear_ai_key' }),
     });
     setAiMsg({ ok: true, text: 'Org key removed — falling back to env or the mock model.' });
+    await load();
+  };
+
+  const saveNotify = async () => {
+    setNotifyMsg(null);
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'save_notify', ownerPhone: phoneInput.trim() || null, autoSend }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    setNotifyMsg(res.ok && data.ok ? { ok: true, text: 'Saved — digests and reminders will go to this number.' } : { ok: false, text: data.error ?? 'Save failed' });
+    await load();
+  };
+
+  const dispatchNow = async () => {
+    setNotifyMsg(null);
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'dispatch_now' }),
+    });
+    const d = (await res.json().catch(() => ({}))) as { sent?: number; echoed?: number; failed?: number; processed?: number; error?: string };
+    setNotifyMsg(
+      d.error
+        ? { ok: false, text: d.error }
+        : { ok: true, text: `Dispatched: ${d.processed ?? 0} queued · ${d.sent ?? 0} sent · ${d.echoed ?? 0} echoed (dev) · ${d.failed ?? 0} failed.` }
+    );
     await load();
   };
 
@@ -167,6 +208,42 @@ export function SettingsClient() {
           <p className="text-xs text-muted-foreground">
             Route picks the model class: default uses gpt-4o for reasoning and gpt-4o-mini for extraction; budget uses cheaper models.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">WhatsApp delivery</CardTitle>
+          <CardDescription>
+            Where digests, payment reminders and approval alerts land. Without Cloud API credentials the app runs in echo mode — sends are recorded and audited but not delivered.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant={notify?.mode === 'live' ? 'success' : 'warning'}>
+              {notify ? (notify.mode === 'live' ? 'Cloud API live' : 'echo mode (dev)') : 'loading…'}
+            </Badge>
+            {notify?.mode === 'echo' && (
+              <span className="text-xs text-muted-foreground">set WHATSAPP_TOKEN + WHATSAPP_PHONE_NUMBER_ID env vars for real delivery</span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={phoneInput}
+              onChange={(e) => setPhoneInput(e.target.value)}
+              placeholder="Owner number, e.g. 919812345678"
+              className="max-w-xs font-mono text-xs"
+              aria-label="Owner WhatsApp number"
+              autoComplete="off"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} />
+              auto-send with daily cron
+            </label>
+            <Button size="sm" onClick={saveNotify} disabled={!notify}>Save</Button>
+            <Button size="sm" variant="outline" onClick={dispatchNow} disabled={!notify}>Dispatch queued now</Button>
+          </div>
+          {notifyMsg && <p className={`text-xs ${notifyMsg.ok ? 'text-emerald-600' : 'text-destructive'}`}>{notifyMsg.text}</p>}
         </CardContent>
       </Card>
 

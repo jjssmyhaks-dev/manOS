@@ -46,6 +46,7 @@ const COMMON_TOOLS = [
   'get_item_stock',
   'sales_summary',
   'reorder_check',
+  'run_mrp',
   'explain_metric',
   // write tools — every pack can draft actions; the policy engine governs them
   'draft_reminders',

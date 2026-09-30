@@ -1,4 +1,4 @@
-import { generateDigest } from '@factory/agents';
+import { generateDigest, dispatchQueuedNotifications, getNotifySettings, scanAnomalies } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
 import { query, audit } from '@factory/db';
 
@@ -35,19 +35,45 @@ export async function POST(req: Request) {
   if (denied) return denied;
 
   const orgs = await query<{ id: string; name: string }>('select id, name from organizations');
-  const results: Array<{ org: string; overdue: number }> = [];
+  const results: Array<{ org: string; overdue: number; anomalies: number }> = [];
   for (const org of orgs) {
     const digest = await generateDigest(org.id);
     await query(
       `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp',$2,'daily_digest',$3,'queued')`,
       [org.id, org.name, digest.channelDrafts.whatsapp]
     );
-    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0 });
+
+    // urgent anomalies get their own alert (not buried in the digest)
+    let anomalyCount = 0;
+    try {
+      const report = await scanAnomalies(org.id);
+      anomalyCount = report.anomalies.length;
+      const urgent = report.anomalies.filter((a) => a.severity === 'high');
+      if (urgent.length) {
+        const body = [`🚨 *${org.name} — ${urgent.length} urgent issue${urgent.length > 1 ? 's' : ''}*`, '', ...urgent.map((a) => `🔴 ${a.title}`), '', urgent[0]!.detail].join('\n');
+        await query(
+          `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp',$2,'anomaly_alert',$3,'queued')`,
+          [org.id, org.name, body]
+        );
+      }
+    } catch {
+      // never break the cron on a scan failure
+    }
+    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0, anomalies: anomalyCount });
   }
   await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.daily_digest', { metadata: { orgs: results.length } });
 
+  // deliver outbound WhatsApp (digests, reminders, alerts) for orgs with
+  // auto_send on; others stay queued for the manual "Dispatch queued now" button
+  let dispatch: Awaited<ReturnType<typeof dispatchQueuedNotifications>> | null = null;
+  for (const org of orgs) {
+    const ns = await getNotifySettings(org.id);
+    if (!ns.autoSend) continue;
+    dispatch = await dispatchQueuedNotifications(org.id);
+  }
+
   const reports = await runMonitoring();
-  return Response.json({ ok: true, results, monitored: reports.length, reports });
+  return Response.json({ ok: true, results, monitored: reports.length, reports, dispatch });
 }
 
 /** Run connector health monitoring for every org; record failures in audit. */

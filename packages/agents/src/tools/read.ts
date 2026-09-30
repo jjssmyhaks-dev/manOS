@@ -2,6 +2,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { query, listEntities } from '@factory/db';
 import { runMetric, listMetrics } from '../semantic.js';
+import { runMrp } from '../mrp.js';
 
 export interface AgentContext {
   orgId: string;
@@ -16,6 +17,7 @@ export const TOOL_RISK: Record<string, 'read' | 'write' | 'external'> = {
   get_item_stock: 'read',
   sales_summary: 'read',
   reorder_check: 'read',
+  run_mrp: 'read',
   explain_metric: 'read',
   draft_reminders: 'write',
   draft_rfq: 'write',
@@ -151,6 +153,26 @@ export const reorderCheckTool = (ctx: AgentContext) =>
     },
   });
 
+// --- run_mrp: demand forecast + net requirements -----------------------------
+
+export const mrpTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Run material requirements planning (MRP): 4-week demand forecast from sales history plus net buy suggestions for finished items and BOM components (gross demand − stock on hand).',
+    inputSchema: z.object({
+      horizonWeeks: z.number().int().min(1).max(12).optional().describe('Planning horizon in weeks (default 4)'),
+    }),
+    execute: async ({ horizonWeeks }) => {
+      const res = await runMrp(ctx.orgId, { horizonWeeks: horizonWeeks ?? 4 });
+      return {
+        asOf: res.asOf,
+        horizonWeeks: res.horizonWeeks,
+        forecast: res.forecast.map((f) => ({ item: f.item, weeklyAvg: f.weeklyAvg, projectedUnits: f.projectedUnits, uom: f.uom })),
+        buySuggestions: res.suggestions,
+      };
+    },
+  });
+
 // --- pack-specific reads ------------------------------------------------------------
 
 export const expiryReportTool = (ctx: AgentContext) =>
@@ -224,6 +246,7 @@ export function readToolDefs(ctx: AgentContext) {
     get_item_stock: getItemStockTool(ctx),
     sales_summary: salesSummaryTool(ctx),
     reorder_check: reorderCheckTool(ctx),
+    run_mrp: mrpTool(ctx),
     expiry_report: expiryReportTool(ctx),
     yield_report: yieldReportTool(ctx),
     fx_exposure: fxExposureTool(ctx),

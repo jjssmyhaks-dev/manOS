@@ -2,6 +2,8 @@ import { query } from '@factory/db';
 import { runMetric } from './semantic.js';
 import { getPack } from '@factory/core';
 import { getModelConfig } from './models.js';
+import { scanAnomalies, anomalyLines } from './anomalies.js';
+import { runMrp } from './mrp.js';
 
 /**
  * Digest agent (PRD F3): scheduled summary (sales, cash, overdue, low stock,
@@ -88,6 +90,30 @@ export async function generateDigest(orgId: string): Promise<Digest> {
   if (pack.digestSections.includes('fx')) {
     const fx = await runMetric(orgId, 'fx_exposure');
     sections.push({ key: 'fx', title: 'FX exposure', lines: [JSON.stringify(fx.breakdown ?? fx.value)] });
+  }
+
+  // proactive anomaly scan — the digest should surface problems unprompted
+  try {
+    const anomalies = await scanAnomalies(orgId);
+    if (!anomalies.ok) {
+      sections.push({ key: 'anomalies', title: `⚠️ Needs attention (${anomalies.anomalies.length})`, lines: anomalyLines(anomalies) });
+    }
+  } catch {
+    // anomaly scan must never break the digest
+  }
+
+  // what to buy today (MRP net requirements)
+  try {
+    const mrp = await runMrp(orgId);
+    if (mrp.suggestions.length) {
+      sections.push({
+        key: 'mrp',
+        title: 'Shopping list (next 4 weeks)',
+        lines: mrp.suggestions.slice(0, 5).map((s) => `• ${s.item ?? '?'}: order ${s.suggestedQty} ${s.uom ?? ''} (need ${s.grossReq}, have ${s.onHand})`),
+      });
+    }
+  } catch {
+    // MRP must never break the digest
   }
 
   const narrativeFallback = [

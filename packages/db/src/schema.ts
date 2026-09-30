@@ -257,8 +257,11 @@ create table if not exists notifications (
   status text not null default 'queued', -- queued|sent|failed|skipped
   approval_id uuid,
   error text,
+  result jsonb, -- dispatcher outcome: attempts, messageId, echo, to (masked)
   created_at timestamptz not null default now()
 );
+-- older deployments created notifications without result; patch in place
+alter table notifications add column if not exists result jsonb;
 
 create table if not exists documents (
   id uuid primary key default gen_random_uuid(),
@@ -301,6 +304,14 @@ create table if not exists ai_config (
   provider text not null default 'openrouter',
   api_key text,
   model_route text not null default 'default', -- default|budget
+  updated_at timestamptz not null default now()
+);
+
+-- per-org outbound notification config (WhatsApp destination + auto-send)
+create table if not exists notify_settings (
+  org_id uuid primary key,
+  owner_phone text, -- E.164 digits, e.g. 919812345678
+  auto_send boolean not null default false, -- cron dispatches without a click
   updated_at timestamptz not null default now()
 );
 `.trim();

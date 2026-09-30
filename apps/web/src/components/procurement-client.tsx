@@ -24,9 +24,22 @@ interface RfqRow {
   data: { item?: string; vendor?: string; needBy?: string };
 }
 
+interface MrpSuggestion {
+  itemId: string;
+  item: string | null;
+  uom: string | null;
+  kind: 'finished' | 'component';
+  grossReq: number;
+  onHand: number;
+  suggestedQty: number;
+  drivenBy?: string;
+  why: string;
+}
+
 export function ProcurementClient() {
   const [items, setItems] = useState<LowStockItem[]>([]);
   const [rfqs, setRfqs] = useState<RfqRow[]>([]);
+  const [mrp, setMrp] = useState<MrpSuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -37,6 +50,7 @@ export function ProcurementClient() {
     ]);
     setItems(m.breakdown ?? []);
     setRfqs(r.rfqs ?? []);
+    setMrp(r.mrp?.suggestions ?? []);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -96,6 +110,42 @@ export function ProcurementClient() {
                     <td>{i.stockOnHand} {i.uom}</td>
                     <td>{i.reorderPoint}</td>
                     <td className="font-medium text-primary">{i.suggestedQty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">MRP buy suggestions (4-week horizon)</CardTitle>
+          <CardDescription>
+            Net requirements from open orders + demand forecast − stock. Components come from BOM explosion.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {mrp.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing to buy — stock covers the 4-week plan.</p>
+          ) : (
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b text-muted-foreground">
+                  <th className="py-1.5">Item</th><th>Buy</th><th>Need</th><th>On hand</th><th>Driver</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mrp.map((s, i) => (
+                  <tr key={`${s.itemId}-${i}`} className="border-b last:border-0 align-top">
+                    <td className="py-1.5 font-medium">
+                      {s.item ?? '—'}
+                      {s.kind === 'component' && <span className="ml-1.5 text-[10px] text-muted-foreground">(part of {s.drivenBy})</span>}
+                    </td>
+                    <td className="font-medium text-primary">{s.suggestedQty} {s.uom}</td>
+                    <td>{s.grossReq}</td>
+                    <td>{s.onHand}</td>
+                    <td className="max-w-[20rem] text-muted-foreground" title={s.why}>{s.why}</td>
                   </tr>
                 ))}
               </tbody>

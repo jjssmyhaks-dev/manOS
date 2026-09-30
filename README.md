@@ -29,6 +29,10 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 | — | Vertical packs (fabrication / FMCG / scrap / exports) | `packages/core/src/packs.ts` |
 | — | Guardrails: role allowlists, PII redaction, prompt-injection isolation | `packages/core/src/guardrails.ts` |
 | — | Semantic metric layer (numbers come from SQL, never the model) | `packages/agents/src/semantic.ts` |
+| — | WhatsApp outbound: Cloud API send with retries, echo mode in dev, notify settings | `packages/connectors/src/whatsapp.ts`, `packages/agents/src/notify.ts`, `/settings` |
+| — | Proactive anomaly agent: price variance, duplicate invoices, receivables spike | `packages/agents/src/anomalies.ts`, `/api/anomalies`, dashboard "Needs attention" card |
+| — | Demand forecast + BOM MRP buy suggestions (4-week horizon) | `packages/agents/src/mrp.ts`, `/procurement`, `run_mrp` agent tool |
+| — | CI: typecheck ×6 workspaces, eval suite, production build | `.github/workflows/ci.yml` |
 
 ## Monorepo layout
 
@@ -110,6 +114,7 @@ policies in **Settings**. No environment variables needed in dev.
 | `AI_MODEL_ROUTE` | `default` (gpt-4o class) / `budget` (flash/sonnet class) |
 | `DATABASE_URL` | Remote Postgres (Neon / Supabase) — pgvector migration auto-applies |
 | `CRON_SECRET` | Bearer guard for the daily cron (`/api/jobs/daily`) |
+| `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API outbound. Without them sends run in echo mode — recorded and audited but not delivered (dev default). Set the owner number under **Settings → WhatsApp delivery**. |
 
 ## Eval suite
 
