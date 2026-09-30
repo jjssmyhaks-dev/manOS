@@ -1,4 +1,4 @@
-import { query } from '@factory/db';
+import { query, hasRemoteDb } from '@factory/db';
 
 /**
  * Unstructured retrieval (PRD §6): chunked documents embedded into pgvector
@@ -40,6 +40,9 @@ export async function embedAndStore(input: ChunkInput): Promise<number> {
   let stored = 0;
   for (const chunk of chunks) {
     const vec = embedVec(chunk);
+    // vec is passed as a JSON float-array string, which is valid input for both
+    // storage shapes: JSONB (local PGlite) and vector(1536) (remote Postgres,
+    // where the server coerces the text literal via vec::text::vector rules).
     await query(
       `insert into embeddings (org_id, entity_id, kind, title, content, vec, metadata)
        values ($1,$2,$3,$4,$5,$6,$7)`,
@@ -54,15 +57,61 @@ function embedVec(text: string): number[] {
   return hashEmbed(text);
 }
 
+// --- pgvector mode detection -------------------------------------------------
+
+let vectorColumn: boolean | null = null;
+
+/** Test hook: forget the cached pgvector detection (next call re-probes). */
+export function resetEmbeddingMode(): void {
+  vectorColumn = null;
+}
+
 /**
- * Similarity search. Dev (JSONB vec): fetch tenant rows, cosine in TS.
- * Prod (Supabase with PGVECTOR_MIGRATION_SQL applied): pgvector does the work
- * via the same two-step flow — the TS cosine is simply replaced by trusting
- * pgvector's order when the extension column is present.
+ * True when embeddings.vec is a real pgvector column on the active engine.
+ * Remote: PGVECTOR_MIGRATION_SQL (run by ensureRemoteSchema) alters it to
+ * vector(1536). Local PGlite: never (0.2.x wasm cannot load pgvector), so
+ * detection is skipped and the JSONB cosine path is used.
+ * Detected once per process and cached.
+ */
+export async function hasVectorColumn(): Promise<boolean> {
+  if (!hasRemoteDb()) return false;
+  if (vectorColumn !== null) return vectorColumn;
+  const rows = await query<{ ok: boolean }>(
+    `select exists (
+       select 1 from information_schema.columns
+       where table_name = 'embeddings' and column_name = 'vec' and udt_name = 'vector'
+     ) as ok`
+  );
+  vectorColumn = Boolean(rows[0]?.ok);
+  return vectorColumn;
+}
+
+/**
+ * Similarity search (PRD §6 unstructured retrieval).
+ * - Remote Postgres with pgvector (PGVECTOR_MIGRATION_SQL applied): ranked
+ *   in-database by the cosine distance operator <=> against the ivfflat index.
+ * - Otherwise (local PGlite, JSONB vec): tenant rows are fetched and scored
+ *   with in-process cosine.
+ * Both paths are tenant-scoped on org_id.
  */
 export async function searchSimilar(orgId: string, q: string, limit = 5): Promise<Array<{ title: string | null; content: string; kind: string; score: number }>> {
   const vec = embedVec(q);
-  // Tenant-scoped fetch (RLS enforces org filter on the server path).
+
+  if (await hasVectorColumn()) {
+    // pgvector: 1 - cosine distance = cosine similarity. RLS enforces the org
+    // filter on the server path; the explicit org_id predicate keeps the plan
+    // on the tenant index.
+    const rows = await query<{ title: string | null; content: string; kind: string; similarity: number }>(
+      `select title, content, kind, 1 - (vec <=> $2::vector) as similarity
+       from embeddings where org_id = $1
+       order by vec <=> $2::vector
+       limit $3`,
+      [orgId, JSON.stringify(vec), limit]
+    );
+    return rows.map((r) => ({ title: r.title, content: r.content, kind: r.kind, score: Number(r.similarity) }));
+  }
+
+  // JSONB path (dev / pgvector unavailable): tenant-scoped fetch + TS cosine.
   const rows = await query<{ title: string | null; content: string; kind: string; vec: unknown }>(
     `select title, content, kind, vec from embeddings where org_id = $1 limit 2000`,
     [orgId]

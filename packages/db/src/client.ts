@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
-import { entityTableDdl, type EntityRow, type EntityType } from './schema.js';
+import { entityTableDdl, PGVECTOR_MIGRATION_SQL, type EntityRow, type EntityType } from './schema.js';
 
 /**
  * Data layer with two interchangeable engines (PRD §7):
@@ -116,6 +116,15 @@ export async function ensureRemoteSchema(): Promise<void> {
     remoteSchemaReady = (async () => {
       const pool = await ensurePool();
       await pool.query(entityTableDdl());
+      // pgvector: switch embeddings.vec to a real vector(1536) column with an
+      // ivfflat cosine index (Neon/Supabase). Idempotent; a failure (no pgvector
+      // extension available / no permission) degrades gracefully — the column
+      // stays JSONB and searchSimilar keeps using in-process cosine.
+      try {
+        await pool.query(PGVECTOR_MIGRATION_SQL);
+      } catch (e) {
+        console.warn('[db] pgvector migration skipped:', e instanceof Error ? e.message : e);
+      }
     })().catch((e: unknown) => {
       remoteSchemaReady = null;
       throw e;

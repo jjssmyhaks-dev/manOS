@@ -75,15 +75,17 @@ export const ENTITY_COLUMNS =
 /**
  * Dev DDL (PGlite): embeddings.vec is JSONB and similarity is computed in TS
  * (packages/agents/embeddings.ts) — PGlite 0.2.x cannot load pgvector's .so.
- * For Supabase prod, run migrations/pgvector.sql (below) to switch the column
- * to vector(1536) with an ivfflat index; searchSimilar uses the <=> operator
- * automatically when the vector column is detected.
+ * On remote Postgres (Neon/Supabase) the client runs this migration once per
+ * process (see ensureRemoteSchema): embeddings.vec becomes a real vector(1536)
+ * column with an ivfflat cosine index and searchSimilar switches to the <=>
+ * operator. Idempotent: safe to run on every boot; a no-op when the column is
+ * already vector type or the extension is unavailable.
  */
-export const PGVECTOR_MIGRATION_SQL = `
--- Run on Supabase (pgvector available natively):
-alter table embeddings alter column vec type vector(1536) using vec::text::vector;
-create index embeddings_vec_idx on embeddings using ivfflat (vec vector_cosine_ops) with (lists = 50);
-`;
+export const PGVECTOR_MIGRATION_SQL = [
+  'create extension if not exists vector;',
+  'alter table embeddings alter column vec type vector(1536) using vec::text::vector;',
+  'create index if not exists embeddings_vec_idx on embeddings using ivfflat (vec vector_cosine_ops) with (lists = 50);',
+].join('\n');
 
 export function entityTableDdl(): string {
   return `

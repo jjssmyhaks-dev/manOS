@@ -1,10 +1,11 @@
-import { getPack } from '@factory/core';
+import { getPack, connectorHealth } from '@factory/core';
 import { query } from '@factory/db';
 import { runMetric } from '@factory/agents';
 import { getSession } from '@/lib/session';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DashboardClient } from '@/components/dashboard-client';
+import { ConnectorHealthCard } from '@/components/connector-health-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,9 +25,12 @@ export default async function DashboardPage() {
     runMetric(s.orgId, 'top_delayed_orders'),
   ]);
   const pack = getPack(s.vertical);
-  const docCount = await query<{ c: string }>(
-    `select count(*) as c from documents where org_id=$1 and status='review'`, [s.orgId]
-  );
+  const [docCount, health] = await Promise.all([
+    query<{ c: string }>(
+      `select count(*) as c from documents where org_id=$1 and status='review'`, [s.orgId]
+    ),
+    connectorHealth(s.orgId),
+  ]);
 
   const kpis = [
     { key: 'sales', label: 'Sales (30d)', value: inr(sales.value ?? 0), sub: `as of ${sales.asOf}`, metricKey: 'sales_last_30d' },
@@ -63,6 +67,8 @@ export default async function DashboardPage() {
           </Card>
         ))}
       </div>
+
+      <ConnectorHealthCard report={health} />
 
       <DashboardClient />
     </div>

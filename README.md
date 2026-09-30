@@ -62,9 +62,12 @@ packages/
   Dev/CI uses a **deterministic in-process mock model** (`packages/agents/src/mock-model.ts`)
   implementing the `LanguageModelV2` provider spec — it plans real tool calls over your data,
   so the whole agent loop runs offline with zero API keys.
-- **Embeddings**: JSONB float arrays + TypeScript cosine similarity in dev (pgvector cannot
-  load inside PGlite 0.2 wasm). For Postgres prod run `PGVECTOR_MIGRATION_SQL` from
-  `packages/db/src/schema.ts` — `searchSimilar` switches to the `<=>` operator automatically.
+- **Embeddings + pgvector**: local PGlite stores `embeddings.vec` as JSONB with TypeScript
+  cosine similarity (pgvector cannot load inside PGlite 0.2 wasm). On remote Postgres the
+  client auto-applies `PGVECTOR_MIGRATION_SQL` (`packages/db/src/schema.ts`) once per process:
+  the column becomes a real `vector(1536)` with an ivfflat cosine index and `searchSimilar`
+  switches to the `<=>` operator (detected via `information_schema`, in-database ranking,
+  graceful JSONB fallback if the extension is unavailable). Verified on Neon.
 - **Storage engines** (`packages/db`): set `DATABASE_URL` (Neon / Supabase / any Postgres) and
   every query — entities, approvals, documents, traces — goes to remote Postgres (schema
   auto-applies); unset, it uses local PGlite persisted to `.pglite-data/` so dev data survives
@@ -76,6 +79,14 @@ packages/
 - **Tally desktop connector**: register it on the **Connectors** page (device token shown
   once), run `apps/connector-desktop` on the Tally machine — it heartbeats every 30s, pulls
   masters, and pushes **approved** `tally_push` vouchers, acking results back into the audit log.
+- **Daily cron & connector monitoring** (`vercel.json`): a Vercel Cron hits `GET /api/jobs/daily`
+  daily at 02:30 UTC (guard with `CRON_SECRET` — `Authorization: Bearer …`). Each run computes
+  the digest for every org, queues the WhatsApp send, and runs connector health monitoring
+  (`connectorHealth` in `packages/core/src/monitoring.ts`): connectors in `error` state, active
+  connectors with no heartbeat for `STALE_AFTER_MIN` (default 60) minutes, and approved
+  `tally_push` backlog are audited (`monitor.connector_health`) and surfaced live on the
+  dashboard's **Connector health** card. `POST /api/jobs/daily` does digest + monitoring
+  (manual/cron entry); `GET` is a monitoring-only snapshot.
 
 ## Quickstart
 
@@ -97,7 +108,8 @@ policies in **Settings**. No environment variables needed in dev.
 | `OPENROUTER_API_KEY` | LLM access (prod) |
 | `AI_PROFILE` | `dev` (mock model) / `prod` (OpenRouter) |
 | `AI_MODEL_ROUTE` | `default` (gpt-4o class) / `budget` (flash/sonnet class) |
-| `DATABASE_URL` | Supabase Postgres for the prod path in `packages/db/src/server.ts` |
+| `DATABASE_URL` | Remote Postgres (Neon / Supabase) — pgvector migration auto-applies |
+| `CRON_SECRET` | Bearer guard for the daily cron (`/api/jobs/daily`) |
 
 ## Eval suite
 
