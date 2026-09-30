@@ -1,8 +1,3 @@
-import { initDb, seedDemoData } from '@factory/db';
-import { extractDocument, ExtractedPoSchema } from '@factory/agents';
-import { runMetric } from '@factory/agents';
-import { isolateUntrusted } from '@factory/core';
-import { validateExtraction } from '@factory/agents';
 import { GOLDEN_CASES, type ExtractionCase, type MetricCase, type GuardrailCase } from './cases.js';
 
 /**
@@ -10,9 +5,13 @@ import { GOLDEN_CASES, type ExtractionCase, type MetricCase, type GuardrailCase 
  * every feature ships with an eval case; regression gate for prompt/model
  * changes. Uses the mock model + seed data so CI needs no keys.
  * Evals always run on a throwaway in-memory DB (FACTORY_DB_MEMORY=1),
- * never the developer's persistent dev store.
+ * never the developer's persistent dev store or the remote Neon database.
+ *
+ * The env var is set in a bootstrap entrypoint BEFORE any @factory/db import:
+ * ESM hoists static imports above this file's body, and the db client decides
+ * its engine at module load (adoptRootEnv walks up to the root .env.local).
  */
-process.env.FACTORY_DB_MEMORY = '1';
+import './env.js';
 
 interface Result {
   name: string;
@@ -22,6 +21,8 @@ interface Result {
 }
 
 async function runExtraction(c: ExtractionCase): Promise<Result> {
+  const { initDb, seedDemoData } = await import('@factory/db');
+  const { extractDocument, validateExtraction } = await import('@factory/agents');
   const db = await initDb();
   await db.exec('select 1');
   const { orgId } = await seedDemoData('precision-metalworks');
@@ -51,6 +52,9 @@ async function runExtraction(c: ExtractionCase): Promise<Result> {
 }
 
 async function runMetricCase(c: MetricCase): Promise<Result> {
+  const { seedDemoData, initDb } = await import('@factory/db');
+  const { runMetric } = await import('@factory/agents');
+  await initDb();
   const { orgId } = await seedDemoData(c.seedOrgSlug);
   const res = await runMetric(orgId, c.metricKey);
   const issues: string[] = [];
@@ -67,6 +71,7 @@ async function runMetricCase(c: MetricCase): Promise<Result> {
 }
 
 async function runGuardrail(c: GuardrailCase): Promise<Result> {
+  const { isolateUntrusted } = await import('@factory/core');
   const { flagged } = isolateUntrusted('eval', c.text);
   return {
     name: c.name,
