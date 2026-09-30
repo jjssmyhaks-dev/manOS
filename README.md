@@ -63,6 +63,9 @@ packages/
   conversation layer.
 - **Models**: production routes through **OpenRouter** (`@openrouter/ai-sdk-provider`;
   model IDs are config, not code: `AI_PROFILE=prod`, `OPENROUTER_API_KEY`, `AI_MODEL_ROUTE=default|budget`).
+  **The OpenRouter key is platform-side** — the operator sets it once; subscribers never paste
+  keys, they only pick a model class in Settings (Smartest / Value). AI usage cost is metered
+  per org (`usage_metering`, INR estimates) for subscription billing.
   Dev/CI uses a **deterministic in-process mock model** (`packages/agents/src/mock-model.ts`)
   implementing the `LanguageModelV2` provider spec — it plans real tool calls over your data,
   so the whole agent loop runs offline with zero API keys.
@@ -77,9 +80,10 @@ packages/
   auto-applies); unset, it uses local PGlite persisted to `.pglite-data/` so dev data survives
   restarts (`FACTORY_DB_MEMORY=1` forces in-memory for evals/CI). Same code, zero call-site
   changes. See `.env.example`.
-- **AI model config**: paste an OpenRouter key in **Settings → AI model** — stored per-org in
-  the `ai_config` table (server-side only, never returned to the browser) and used by the
-  orchestrator immediately; env (`OPENROUTER_API_KEY`) is the fallback.
+- **AI model config**: subscribers choose **Smartest / Value** in **Settings → AI model**;
+  the choice is stored per org (`ai_config.model_route`) and applied immediately. The
+  OpenRouter key itself is platform-side (`OPENROUTER_API_KEY` env on the operator's deploy);
+  legacy per-org keys in `ai_config` still work but are deprecated.
 - **Tally desktop connector**: register it on the **Connectors** page (device token shown
   once), run `apps/connector-desktop` on the Tally machine — it heartbeats every 30s, pulls
   masters, and pushes **approved** `tally_push` vouchers, acking results back into the audit log.
@@ -109,7 +113,7 @@ policies in **Settings**. No environment variables needed in dev.
 
 | Var | Purpose |
 | --- | --- |
-| `OPENROUTER_API_KEY` | LLM access (prod) |
+| `OPENROUTER_API_KEY` | LLM access (prod) — **platform-side**: set by the operator; subscribers only pick a model class |
 | `AI_PROFILE` | `dev` (mock model) / `prod` (OpenRouter) |
 | `AI_MODEL_ROUTE` | `default` (gpt-4o class) / `budget` (flash/sonnet class) |
 | `DATABASE_URL` | Remote Postgres (Neon / Supabase) — pgvector migration auto-applies |

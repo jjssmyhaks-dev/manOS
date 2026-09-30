@@ -2,7 +2,7 @@ import { streamText, stepCountIs } from 'ai';
 import { z } from 'zod';
 import { query, traceRun, meter } from '@factory/db';
 import { getPack, toolAllowedForRole } from '@factory/core';
-import { getModelForOrg, getModelConfig, getModelRoute, type AiConfigLookup } from './models.js';
+import { getModelForOrg, getModelConfig, getModelRoute, estimateCostInr, type AiConfigLookup } from './models.js';
 import { listMetricKeysForPrompt } from './tools/read.js';
 import { listFacts } from './memory.js';
 import { readToolDefs } from './tools/read.js';
@@ -107,6 +107,7 @@ interface Prepared {
   convoId: string;
   model: Parameters<typeof streamText>[0]['model'];
   modelDisplay: string;
+  modelRoute: string;
   tools: ReturnType<typeof toolsForOrg>;
   memoryBlock: string;
 }
@@ -160,6 +161,7 @@ async function prepareOrchestration(req: ChatRequest, deps: OrchestratorDeps): P
     convoId: convoId!,
     model: resolved.model,
     modelDisplay: resolved.cfg.profile === 'prod' ? getModelRoute(resolved.cfg).reasoning : 'mock',
+    modelRoute: String(resolved.cfg.route),
     tools,
     memoryBlock,
   };
@@ -190,6 +192,8 @@ function buildStreamOpts(req: ChatRequest, p: Prepared, deps: OrchestratorDeps) 
         );
       const tokensIn = usage?.inputTokens ?? 0;
       const tokensOut = usage?.outputTokens ?? 0;
+      // platform-side AI: usage cost is attributed per org for subscription billing
+      const costInr = p.modelDisplay === 'mock' ? 0 : estimateCostInr(p.modelRoute, 'reasoning', tokensIn + tokensOut);
       await traceRun({
         orgId: p.org.id,
         conversationId: p.convoId,
@@ -200,11 +204,11 @@ function buildStreamOpts(req: ChatRequest, p: Prepared, deps: OrchestratorDeps) 
         toolCalls,
         tokensIn,
         tokensOut,
-        costInr: 0,
+        costInr,
         latencyMs,
         status: finishReason === 'error' ? 'error' : 'done',
       });
-      await meter(p.org.id, 'chat', tokensIn + tokensOut, 0);
+      await meter(p.org.id, 'chat', tokensIn + tokensOut, costInr);
     },
   };
 }

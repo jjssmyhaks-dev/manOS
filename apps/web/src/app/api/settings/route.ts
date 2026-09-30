@@ -1,24 +1,23 @@
 import { query, audit } from '@factory/db';
 import { setPolicy, getPolicyDecision } from '@factory/core';
-import { listFacts, addFact, setFactStatus, getNotifySettings, saveNotifySettings, dispatchQueuedNotifications } from '@factory/agents';
+import { listFacts, addFact, setFactStatus, getNotifySettings, saveNotifySettings, dispatchQueuedNotifications, ROUTE_LABELS, platformHasAiKey } from '@factory/agents';
 import { whatsappEnvConfig } from '@factory/connectors';
 import { getSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
-/** GET /api/settings — policies + org facts + AI model config (key masked). */
+/** GET /api/settings — policies + org facts + AI model choice (platform key; no user keys). */
 export async function GET() {
   const s = await getSession();
   const policies = await query('select action_type, decision from policies where org_id=$1 order by action_type', [s.orgId]);
   const facts = await listFacts(s.orgId);
-  const ai = await query<{ provider: string; api_key: string | null; model_route: string }>(
-    'select provider, api_key, model_route from ai_config where org_id=$1 limit 1',
+  const ai = await query<{ model_route: string }>(
+    'select model_route from ai_config where org_id=$1 limit 1',
     [s.orgId]
   );
-  const envKey = Boolean(process.env.OPENROUTER_API_KEY);
-  const key = ai[0]?.api_key ?? null;
   const notify = await getNotifySettings(s.orgId);
   const wa = whatsappEnvConfig();
+  const platform = platformHasAiKey();
   return Response.json({
     policies,
     facts,
@@ -29,12 +28,10 @@ export async function GET() {
       phone_number_id_set: Boolean(wa.phoneNumberId),
     },
     ai: {
-      provider: ai[0]?.provider ?? 'openrouter',
+      platform,
       model_route: ai[0]?.model_route ?? 'default',
-      has_org_key: Boolean(key),
-      key_masked: key ? `${key.slice(0, 7)}…${key.slice(-4)}` : null,
-      has_env_key: envKey,
-      effective: key ? 'org-key (prod)' : envKey ? 'env-key (prod)' : 'mock (dev)',
+      effective: platform ? 'Smart AI included' : 'mock (dev — platform key not configured)',
+      options: Object.entries(ROUTE_LABELS).map(([key, v]) => ({ key, ...v })),
     },
   });
 }
@@ -43,12 +40,11 @@ export async function GET() {
 export async function POST(req: Request) {
   const s = await getSession();
   const body = (await req.json()) as {
-    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_ai_config' | 'clear_ai_key' | 'save_notify' | 'dispatch_now';
+    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_model_route' | 'save_notify' | 'dispatch_now';
     actionType?: string;
     decision?: 'auto' | 'ask' | 'deny';
     fact?: string;
     factId?: string;
-    apiKey?: string;
     modelRoute?: 'default' | 'budget';
     ownerPhone?: string | null;
     autoSend?: boolean;
@@ -75,30 +71,20 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   }
 
-  if (body.action === 'set_ai_config') {
-    const key = body.apiKey?.trim();
-    if (key !== undefined && key.length > 0 && !key.startsWith('sk-or-')) {
-      return Response.json({ error: 'OpenRouter keys start with sk-or-' }, { status: 400 });
-    }
+  // subscriber chooses the model class only — the AI key stays platform-side
+  if (body.action === 'set_model_route') {
     const route = body.modelRoute === 'budget' ? 'budget' : 'default';
     await query(
-      `insert into ai_config (org_id, provider, api_key, model_route)
-       values ($1,'openrouter',$2,$3)
+      `insert into ai_config (org_id, provider, model_route)
+       values ($1,'openrouter',$2)
        on conflict (org_id) do update set
-         api_key = coalesce(excluded.api_key, ai_config.api_key),
          model_route = excluded.model_route,
          updated_at = now()`,
-      [s.orgId, key && key.length > 0 ? key : null, route]
+      [s.orgId, route]
     );
-    await audit(s.orgId, `user:${s.userName}`, 'settings.ai_config', {
-      metadata: { route, key_set: Boolean(key) },
+    await audit(s.orgId, `user:${s.userName}`, 'settings.model_route', {
+      metadata: { route },
     });
-    return Response.json({ ok: true });
-  }
-
-  if (body.action === 'clear_ai_key') {
-    await query(`update ai_config set api_key = null, updated_at = now() where org_id = $1`, [s.orgId]);
-    await audit(s.orgId, `user:${s.userName}`, 'settings.ai_config', { metadata: { key_cleared: true } });
     return Response.json({ ok: true });
   }
   if (body.action === 'add_fact' && body.fact) {
