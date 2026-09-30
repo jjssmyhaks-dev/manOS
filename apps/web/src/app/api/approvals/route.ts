@@ -29,6 +29,13 @@ export async function POST(req: Request) {
   const res = await decideApproval(body.id, body.decision, `user:${s.userName}`, (payload) =>
     executeAction(s.orgId, actionType, payload as Record<string, unknown>)
   );
+  // remediation bookkeeping: outcome recorded against the originating finding
+  try {
+    const { decideProposal } = await import('@factory/agents');
+    await decideProposal(s.orgId, body.id, body.decision === 'approve', `user:${s.userName}`);
+  } catch {
+    // non-remediation approvals and bookkeeping failures must not block the decision
+  }
   await audit(s.orgId, `user:${s.userName}`, `approvals.${body.decision}`, { entityId: body.id, metadata: { actionType } });
   return Response.json({ ok: true, ...res });
 }

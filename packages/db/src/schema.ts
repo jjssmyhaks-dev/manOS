@@ -314,5 +314,19 @@ create table if not exists notify_settings (
   auto_send boolean not null default false, -- cron dispatches without a click
   updated_at timestamptz not null default now()
 );
+
+-- scheduled agent tasks in plain language ("every friday chase overdue >15 days")
+-- the daily cron compiles these into tool executions; last_result carries the
+-- latest run summary so failures surface in the UI instead of dying silently
+create table if not exists agent_jobs (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  schedule text not null, -- 'daily' | 'weekly:1'..('weekly:7' = ISO weekday)
+  instruction text not null,
+  enabled boolean not null default true,
+  last_run_at timestamptz,
+  last_result jsonb,
+  created_at timestamptz not null default now()
+);
 `.trim();
 }

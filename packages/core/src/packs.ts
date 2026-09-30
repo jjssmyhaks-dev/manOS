@@ -42,6 +42,7 @@ export interface VerticalPack {
 
 const COMMON_TOOLS = [
   'query_data',
+  'remember',
   'list_overdue',
   'get_item_stock',
   'sales_summary',

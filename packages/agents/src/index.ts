@@ -1,7 +1,7 @@
 export * from './models.js';
 export * from './semantic.js';
 export * from './orchestrator.js';
-export { extractDocument, acceptDocument, ExtractedPoSchema, validateExtraction } from './extraction.js';
+export { extractDocument, extractDocumentFromImage, acceptDocument, ExtractedPoSchema, validateExtraction } from './extraction.js';
 export type { ExtractedPo, ExtractionResult } from './extraction.js';
 export { generateDigest } from './digest.js';
 export { dispatchQueuedNotifications, getNotifySettings, saveNotifySettings, MAX_ATTEMPTS } from './notify.js';
@@ -10,6 +10,12 @@ export { scanAnomalies, anomalyLines, scanPriceVariance, scanDuplicateInvoices, 
 export type { Anomaly, AnomalyReport, AnomalySeverity } from './anomalies.js';
 export { runMrp, forecastDemand } from './mrp.js';
 export type { MrpSuggestion, MrpResult, ForecastPoint } from './mrp.js';
+export { predictDeliveryDelays, forecastCash, delayRiskLines, cashForecastLines } from './insights.js';
+export type { DelayRisk, DelayRiskReport, CashWeek, CashForecastReport } from './insights.js';
+export { proposeTopRemediation, proposeRemediation, decideProposal } from './remediation.js';
+export type { RemediationProposal, ProposalOutcome } from './remediation.js';
+export { runDueAgentJobs, runAgentJobNow, listAgentJobs, addAgentJob, setAgentJobEnabled } from './agent-jobs.js';
+export type { AgentJob, AgentJobRunResult } from './agent-jobs.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, listEntities } from '@factory/db';
 import { runMetric, listMetrics } from '../semantic.js';
 import { runMrp } from '../mrp.js';
+import { addFact } from '../memory.js';
 
 export interface AgentContext {
   orgId: string;
@@ -13,6 +14,8 @@ export interface AgentContext {
 /** Risk tags are re-declared here for the guardrail layer and UI badges. */
 export const TOOL_RISK: Record<string, 'read' | 'write' | 'external'> = {
   query_data: 'read',
+  ask_data: 'read',
+  remember: 'write',
   list_overdue: 'read',
   get_item_stock: 'read',
   sales_summary: 'read',
@@ -42,6 +45,21 @@ export const queryDataTool = (ctx: AgentContext) =>
     execute: async ({ metricKey, params }) => {
       const result = await runMetric(ctx.orgId, metricKey, params ?? {});
       return { metric: metricKey, ...result };
+    },
+  });
+
+// --- remember: learning memory (org facts are reviewable, not hidden state) ---
+
+export const rememberTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      "Save a durable fact about how this factory operates (pricing floors, vendor rules, customer preferences, process conventions). Use whenever the owner states a preference or corrects you: 'remember that…', 'always…', 'never quote below…'. Facts are reviewable in Settings and injected into future answers.",
+    inputSchema: z.object({
+      fact: z.string().min(3).max(500).describe('The fact as a clear rule or preference'),
+    }),
+    execute: async ({ fact }) => {
+      const factId = await addFact(ctx.orgId, fact, 'agent');
+      return { saved: true, factId, fact };
     },
   });
 
@@ -173,6 +191,86 @@ export const mrpTool = (ctx: AgentContext) =>
     },
   });
 
+// --- ask_data: conversational BI over allowlisted tables ---------------------
+
+const ASK_DATA_TABLES: Record<string, { columns: string[]; description: string }> = {
+  sales_orders: { columns: ['code', 'party_id', 'item_id', 'qty', 'rate', 'amount', 'status', 'date'], description: 'customer sales orders' },
+  invoices: { columns: ['code', 'party_id', 'item_id', 'amount', 'status', 'date'], description: 'customer invoices' },
+  purchase_orders: { columns: ['code', 'party_id', 'item_id', 'qty', 'rate', 'amount', 'status', 'date'], description: 'vendor purchase orders' },
+  job_cards: { columns: ['code', 'item_id', 'qty', 'status', 'date'], description: 'production job cards' },
+  items: { columns: ['code', 'qty', 'rate'], description: 'item master with stock and rates' },
+};
+
+export const askDataTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Ask an arbitrary data question with a JSON spec: pick a table, group by a column, and aggregate (sum/count/avg/min/max). Use this when no named metric fits — e.g. "sales per customer this quarter", "average order size per item". Tables: ' +
+      Object.entries(ASK_DATA_TABLES)
+        .map(([t, v]) => `${t} (${v.columns.join(', ')})`)
+        .join('; '),
+    inputSchema: z.object({
+      table: z.enum(['sales_orders', 'invoices', 'purchase_orders', 'job_cards', 'items']).describe('Which table to query'),
+      groupBy: z
+        .enum(['code', 'party_id', 'item_id', 'status', 'date', 'none'])
+        .optional()
+        .describe('Column to group results by (date groups by month); omit for a single total'),
+      metric: z.enum(['sum', 'count', 'avg', 'min', 'max']).default('sum'),
+      valueColumn: z.enum(['amount', 'qty', 'rate']).optional().describe('Numeric column for sum/avg/min/max (ignored for count)'),
+      lastDays: z.number().int().min(1).max(365).optional().describe('Restrict to rows from the last N days'),
+      limit: z.number().int().min(1).max(50).default(10),
+    }),
+    execute: async ({ table, groupBy, metric, valueColumn, lastDays, limit }) => {
+      const meta = ASK_DATA_TABLES[table]!;
+      const valueCol = valueColumn ?? 'amount';
+      if (metric !== 'count' && !meta.columns.includes(valueCol)) {
+        return { error: `column ${valueCol} not available on ${table}` };
+      }
+      const entityMap: Record<string, string> = {
+        sales_orders: 'sales_order',
+        invoices: 'invoice',
+        purchase_orders: 'purchase_order',
+        job_cards: 'job_card',
+        items: 'item',
+      };
+      const type = entityMap[table]!;
+      const agg = metric === 'count' ? 'count(*)' : `${metric}(${valueCol})`;
+      const params: unknown[] = [ctx.orgId];
+      let where = `org_id = $1 and type = '${type}'`;
+      if (lastDays && table !== 'items') {
+        params.push(lastDays);
+        where += ` and date >= current_date - $${params.length}::int`;
+      }
+      const selectParts = [`${agg} as value`];
+      let label = 'all';
+      if (groupBy && groupBy !== 'none') {
+        if (groupBy === 'party_id' || groupBy === 'item_id') {
+          const refType = groupBy === 'party_id' ? 'party' : 'item';
+          selectParts.push(
+            `coalesce((select coalesce(r.name, r.data->>'name') from entities r where r.id = e.${groupBy}), '(unknown)') as label`
+          );
+          void refType;
+        } else if (groupBy === 'date') {
+          selectParts.push(`to_char(date_trunc('month', date), 'YYYY-MM') as label`);
+        } else {
+          selectParts.push(`coalesce(${groupBy}, '(none)') as label`);
+        }
+        label = groupBy;
+      }
+      const groupClause = groupBy && groupBy !== 'none' ? ` group by label order by value desc limit ${limit ?? 10}` : '';
+      const rows = await query<{ label?: string; value: string | number }>(
+        `select ${selectParts.join(', ')} from entities e where ${where}${groupClause}`,
+        params
+      );
+      return {
+        table,
+        metric: metric === 'count' ? 'count' : `${metric}(${valueCol})`,
+        groupedBy: label,
+        rows: rows.map((r) => ({ label: r.label ?? 'all', value: Number(r.value) })),
+        asOf: new Date().toISOString().slice(0, 10),
+      };
+    },
+  });
+
 // --- pack-specific reads ------------------------------------------------------------
 
 export const expiryReportTool = (ctx: AgentContext) =>
@@ -242,6 +340,8 @@ export const exportDocsStatusTool = (ctx: AgentContext) =>
 export function readToolDefs(ctx: AgentContext) {
   return {
     query_data: queryDataTool(ctx),
+    ask_data: askDataTool(ctx),
+    remember: rememberTool(ctx),
     list_overdue: listOverdueTool(ctx),
     get_item_stock: getItemStockTool(ctx),
     sales_summary: salesSummaryTool(ctx),

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { UploadIcon, FileCheck2Icon, Loader2Icon } from 'lucide-react';
+import { UploadIcon, FileCheck2Icon, Loader2Icon, CameraIcon } from 'lucide-react';
 
 interface DocumentRow {
   id: string;
@@ -55,13 +55,16 @@ export function DocumentsClient() {
   const upload = async (file: File) => {
     setBusy(true);
     try {
+      const isImage = file.type.startsWith('image/');
       const fd = new FormData();
       fd.set('file', file);
-      const res = await fetch('/api/documents/upload', { method: 'POST', body: fd });
+      const res = await fetch(isImage ? '/api/documents/image' : '/api/documents/upload', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.ok) {
         setLast({ confidence: data.overallConfidence, needsReview: data.needsReview, validation: data.validation ?? [] });
         await load();
+      } else {
+        setLast({ confidence: 0, needsReview: true, validation: [data.error ?? 'upload failed'] });
       }
     } finally {
       setBusy(false);
@@ -106,13 +109,16 @@ export function DocumentsClient() {
             <input
               ref={fileRef}
               type="file"
-              accept=".txt,.csv,.md,.json,.pdf"
+              accept=".txt,.csv,.md,.json,.pdf,image/*"
               className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); }}
             />
             <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
-              <UploadIcon className="h-4 w-4" /> Upload file
+              <UploadIcon className="h-4 w-4" /> Upload file or photo
             </Button>
+            <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <CameraIcon className="h-3 w-3" /> photos of POs/job cards need a vision model key in Settings
+            </span>
             {last && (
               <span className="text-xs text-muted-foreground">
                 Last: {(last.confidence * 100).toFixed(0)}% confidence · {last.needsReview ? 'needs review' : 'auto-ready'}

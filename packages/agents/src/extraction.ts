@@ -110,6 +110,47 @@ export interface ExtractDeps {
   model?: Parameters<typeof generateObject>[0]['model'];
 }
 
+/**
+ * Multimodal intake: a photo of a PO/invoice/challan/job card straight into
+ * the same strict schema. Uses a vision-capable model with a data-URL image
+ * part; in mock/dev mode (no key) it fails explicitly so the caller can ask
+ * for text instead — no silent hallucination of an unread image.
+ */
+export async function extractDocumentFromImage(
+  orgId: string,
+  input: { filename?: string; imageBase64: string; mimeType?: string; source?: 'upload' | 'whatsapp' },
+  deps: ExtractDeps = {}
+): Promise<ExtractionResult & { documentId: string }> {
+  const cfg = getModelConfig();
+  if (!deps.model && !(cfg.profile === 'prod' && cfg.openRouterApiKey)) {
+    throw new Error(
+      'Image extraction needs a vision model — set an OpenRouter key in Settings (dev mock is text-only). Paste the text or type it instead.'
+    );
+  }
+  const model = deps.model ?? getModel('fast');
+  const mime = input.mimeType ?? 'image/jpeg';
+  const { object } = await generateObject({
+    model,
+    schema: ExtractedPoSchema,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'This is a photo of a purchase order / invoice / challan / handwritten job card from an Indian factory. Extract the fields into the schema. Copy numbers exactly as printed.' },
+          { type: 'image', image: `data:${mime};base64,${input.imageBase64}` },
+        ],
+      },
+    ],
+  });
+  return persistExtraction(orgId, object, {
+    mode: 'model',
+    filename: input.filename ?? 'photo',
+    source: input.source ?? 'upload',
+    flagged: false,
+    content: `[image:${mime} ${input.imageBase64.length}b]`,
+  });
+}
+
 export async function extractDocument(
   orgId: string,
   input: { filename?: string; text: string; source?: 'upload' | 'email' | 'whatsapp' },
@@ -134,6 +175,15 @@ export async function extractDocument(
     mode = 'mock';
   }
 
+  return persistExtraction(orgId, extraction, { mode, filename: input.filename, source: input.source ?? 'upload', flagged, content: input.text.slice(0, 20000) });
+}
+
+/** Shared persistence + scoring for both text and image extraction paths. */
+async function persistExtraction(
+  orgId: string,
+  extraction: ExtractedPo,
+  opts: { mode: 'model' | 'mock'; filename?: string; source: 'upload' | 'email' | 'whatsapp'; flagged: boolean; content: string }
+): Promise<ExtractionResult & { documentId: string }> {
   const validation = validateExtraction(extraction);
   const fieldConfidence: FieldConfidence[] = [
     { field: 'poNumber', confidence: extraction.poNumber ? 0.95 : 0.2 },
@@ -142,20 +192,19 @@ export async function extractDocument(
     { field: 'totalAmount', confidence: extraction.totalAmount != null ? 0.93 : 0.2 },
     { field: 'lines', confidence: extraction.lines.length ? 0.9 : 0.3 },
   ];
-  const overallConfidence = mode === 'mock' ? scoreConfidence(extraction, validation) : fieldConfidence.reduce((s, f) => s + f.confidence, 0) / fieldConfidence.length;
-  const needsReview = overallConfidence < REVIEW_THRESHOLD || validation.length > 0 || flagged;
+  const overallConfidence = opts.mode === 'mock' ? scoreConfidence(extraction, validation) : fieldConfidence.reduce((s, f) => s + f.confidence, 0) / fieldConfidence.length;
+  const needsReview = overallConfidence < REVIEW_THRESHOLD || validation.length > 0 || opts.flagged;
 
-  // persist document + review record
   const doc = await query<{ id: string }>(
     `insert into documents (org_id, kind, filename, source, status, extraction, confidence, content)
      values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
-    [orgId, extraction.kind, input.filename ?? null, input.source ?? 'upload', needsReview ? 'review' : 'ready', JSON.stringify(extraction), overallConfidence, input.text.slice(0, 20000)]
+    [orgId, extraction.kind, opts.filename ?? null, opts.source, needsReview ? 'review' : 'ready', JSON.stringify(extraction), overallConfidence, opts.content]
   );
   const documentId = doc[0]!.id;
 
   await audit(orgId, 'agent', 'document.extracted', {
     entityType: 'document', entityId: documentId,
-    metadata: { mode, confidence: overallConfidence, needsReview, flagged, filename: input.filename },
+    metadata: { mode: opts.mode, confidence: overallConfidence, needsReview, flagged: opts.flagged, filename: opts.filename },
   });
 
   return { extraction, overallConfidence, fieldConfidence, needsReview, validation, documentId };

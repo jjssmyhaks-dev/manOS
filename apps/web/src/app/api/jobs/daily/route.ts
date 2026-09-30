@@ -1,4 +1,12 @@
-import { generateDigest, dispatchQueuedNotifications, getNotifySettings, scanAnomalies } from '@factory/agents';
+import {
+  generateDigest,
+  dispatchQueuedNotifications,
+  getNotifySettings,
+  scanAnomalies,
+  proposeTopRemediation,
+  runDueAgentJobs,
+  type AgentJobRunResult,
+} from '@factory/agents';
 import { connectorHealth } from '@factory/core';
 import { query, audit } from '@factory/db';
 
@@ -35,7 +43,8 @@ export async function POST(req: Request) {
   if (denied) return denied;
 
   const orgs = await query<{ id: string; name: string }>('select id, name from organizations');
-  const results: Array<{ org: string; overdue: number; anomalies: number }> = [];
+  const results: Array<{ org: string; overdue: number; anomalies: number; remediation: string }> = [];
+  const jobResults: AgentJobRunResult[] = [];
   for (const org of orgs) {
     const digest = await generateDigest(org.id);
     await query(
@@ -59,7 +68,24 @@ export async function POST(req: Request) {
     } catch {
       // never break the cron on a scan failure
     }
-    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0, anomalies: anomalyCount });
+
+    // closed-loop remediation: the worst finding becomes a draft action in
+    // the approvals inbox (policy decides auto vs ask)
+    let remediationNote = 'none';
+    try {
+      const r = await proposeTopRemediation(org.id);
+      remediationNote = r.decision === 'skipped' ? `skipped (${r.reason})` : `${r.decision}${r.approvalId ? ` (${r.approvalId.slice(0, 8)}…)` : ''}`;
+    } catch {
+      // remediation must never break the cron
+    }
+    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0, anomalies: anomalyCount, remediation: remediationNote });
+  }
+
+  // the agent's own schedule: NL recurring tasks due today, executed with tools
+  try {
+    jobResults.push(...(await runDueAgentJobs()));
+  } catch (e) {
+    console.error('agent jobs failed:', e);
   }
   await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.daily_digest', { metadata: { orgs: results.length } });
 
@@ -73,7 +99,7 @@ export async function POST(req: Request) {
   }
 
   const reports = await runMonitoring();
-  return Response.json({ ok: true, results, monitored: reports.length, reports, dispatch });
+  return Response.json({ ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length });
 }
 
 /** Run connector health monitoring for every org; record failures in audit. */

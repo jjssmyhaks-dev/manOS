@@ -1,16 +1,46 @@
-import { verifySignature, parseWebhook } from '@factory/connectors';
+import { verifySignature, parseWebhook, whatsappEnvConfig, sendWhatsAppText } from '@factory/connectors';
 import { query, audit } from '@factory/db';
-import { extractDocument } from '@factory/agents';
+import { extractDocument, runOrchestratorToText } from '@factory/agents';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 /**
- * POST /api/webhooks/whatsapp — verified + idempotent (PRD §10).
- * Text messages with PO-like content are routed to the document intake
- * pipeline; voice notes are queued for STT (Sarvam, P1). GET handles
- * Meta's hub verification challenge.
+ * WhatsApp webhook (PRD §10) — verified + idempotent + conversational:
+ * - hub verification (GET) and signature checks
+ * - PO-like texts route to document intake (extraction → review queue)
+ * - other texts are questions for the operations agent: the orchestrator
+ *   answers from factory data and the reply is sent back on WhatsApp
+ *   (echo mode in dev — recorded and audited, not delivered)
+ * - voice notes queue for STT
  */
+
+const INTAKE_ORG = '00000000-0000-0000-0000-000000000000';
+
+/** Inbound number → owner org + role, with the seed org as dev fallback. */
+async function resolveInboundOrg(from: string): Promise<{ orgId: string; role: string } | null> {
+  const byOwner = await query<{ org_id: string }>(
+    `select org_id from notify_settings where owner_phone = $1 limit 1`,
+    [from]
+  );
+  if (byOwner[0]) return { orgId: byOwner[0].org_id, role: 'owner' };
+
+  const byParty = await query<{ org_id: string }>(
+    `select org_id from parties where phone = $1 limit 1`,
+    [from]
+  );
+  if (byParty[0]) return { orgId: byParty[0].org_id, role: 'customer' };
+
+  const fallback = await query<{ id: string }>(
+    'select id from organizations order by created_at asc limit 1'
+  );
+  return fallback[0] ? { orgId: fallback[0].id, role: 'owner' } : null;
+}
+
+/** Does this inbound text look like a PO/invoice/challan to intake? */
+function looksLikeDocument(text: string): boolean {
+  return /\bpo\b|po number|purchase order|invoice|challan|quotation/i.test(text);
+}
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -48,21 +78,21 @@ export async function POST(req: Request) {
     );
     if (seen[0]) continue;
 
-    await audit('00000000-0000-0000-0000-000000000000', 'system', 'whatsapp.message', {
+    await audit(INTAKE_ORG, 'system', 'whatsapp.message', {
       metadata: { messageId: msg.messageId, from: msg.from, type: msg.type },
     });
 
     if (msg.type === 'audio' && msg.voiceMediaId) {
       await query(
         `insert into notifications (org_id, channel, to_addr, template, body, status)
-         values ('00000000-0000-0000-0000-000000000000','webhook','stt-queue','voice_note',$1,'queued')`,
-        [JSON.stringify({ messageId: msg.messageId, mediaId: msg.voiceMediaId, from: msg.from })]
+         values ($1,'webhook','stt-queue','voice_note',$2,'queued')`,
+        [INTAKE_ORG, JSON.stringify({ messageId: msg.messageId, mediaId: msg.voiceMediaId, from: msg.from })]
       );
       handled.push(`voice:${msg.messageId}`);
       continue;
     }
 
-    if (msg.text && /po|order|invoice| Challan|quotation/i.test(msg.text)) {
+    if (msg.text && looksLikeDocument(msg.text)) {
       const orgRows = await query<{ id: string }>('select id from organizations order by created_at asc limit 1');
       if (orgRows[0]) {
         await extractDocument(orgRows[0].id, { text: msg.text, source: 'whatsapp' });
@@ -70,6 +100,44 @@ export async function POST(req: Request) {
         continue;
       }
     }
+
+    if (msg.text) {
+      const target = await resolveInboundOrg(msg.from);
+      if (!target) {
+        handled.push(`text:${msg.messageId}`);
+        continue;
+      }
+      try {
+        const { conversationId, text: reply } = await runOrchestratorToText({
+          orgId: target.orgId,
+          role: target.role,
+          message: msg.text,
+          channel: 'whatsapp',
+        });
+        const envCfg = whatsappEnvConfig();
+        await audit(target.orgId, 'agent', 'whatsapp.agent_reply', {
+          entityType: 'conversation',
+          entityId: conversationId,
+          metadata: { to: msg.from, reply: reply.slice(0, 500), echo: envCfg.echo },
+        });
+        if (envCfg.echo) {
+          // echo mode: reply audited above, not delivered (dev default)
+          handled.push(`agent:${msg.messageId}:echo`);
+        } else {
+          const send = await sendWhatsAppText(
+            { token: envCfg.token!, phoneNumberId: envCfg.phoneNumberId! },
+            msg.from,
+            reply
+          );
+          handled.push(`agent:${msg.messageId}:${send.ok ? 'sent' : `error:${(send.error ?? 'unknown').slice(0, 40)}`}`);
+        }
+      } catch (e) {
+        console.error('whatsapp agent reply failed:', e);
+        handled.push(`agent-error:${msg.messageId}`);
+      }
+      continue;
+    }
+
     handled.push(`text:${msg.messageId}`);
   }
 

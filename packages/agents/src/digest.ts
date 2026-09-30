@@ -4,6 +4,7 @@ import { getPack } from '@factory/core';
 import { getModelConfig } from './models.js';
 import { scanAnomalies, anomalyLines } from './anomalies.js';
 import { runMrp } from './mrp.js';
+import { predictDeliveryDelays, delayRiskLines, forecastCash, cashForecastLines } from './insights.js';
 
 /**
  * Digest agent (PRD F3): scheduled summary (sales, cash, overdue, low stock,
@@ -115,6 +116,17 @@ export async function generateDigest(orgId: string): Promise<Digest> {
   } catch {
     // MRP must never break the digest
   }
+
+  // predictive: delivery-delay risks + cash outlook (never break the digest)
+  try {
+    const risks = await predictDeliveryDelays(orgId);
+    const lines = delayRiskLines(risks);
+    if (lines.length) sections.push({ key: 'delay_risk', title: `⚠️ Delivery risk (${risks.atRisk})`, lines });
+  } catch {}
+  try {
+    const cash = await forecastCash(orgId);
+    sections.push({ key: 'cash_outlook', title: '💰 Cash outlook', lines: cashForecastLines(cash) });
+  } catch {}
 
   const narrativeFallback = [
     `${org.name} — daily digest (${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })})`,
