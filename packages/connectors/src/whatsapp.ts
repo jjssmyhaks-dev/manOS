@@ -78,6 +78,23 @@ export function whatsappEnvConfig(): { token: string | null; phoneNumberId: stri
   return { token, phoneNumberId, echo, graphVersion: process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0' };
 }
 
+/**
+ * Live credential test: GET /{phoneNumberId} on the Graph API. A valid token
+ * + phone number id returns the display name; anything else returns the
+ * provider's error so setup problems surface at setup time.
+ */
+export async function whatsappTestConnection(cfg: { token: string; phoneNumberId: string; graphVersion?: string }): Promise<{ ok: boolean; displayName?: string; error?: string }> {
+  const version = cfg.graphVersion ?? 'v21.0';
+  try {
+    const res = await fetch(`https://graph.facebook.com/${version}/${cfg.phoneNumberId}?access_token=${encodeURIComponent(cfg.token)}`);
+    const data = (await res.json().catch(() => ({}))) as { name?: string; display_phone_number?: string; error?: { message?: string } };
+    if (!res.ok || data.error) return { ok: false, error: data.error?.message ?? `Graph API HTTP ${res.status}` };
+    return { ok: true, displayName: data.name ?? data.display_phone_number ?? 'WhatsApp number' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export interface WhatsAppSendResult {
   ok: boolean;
   messageId?: string;

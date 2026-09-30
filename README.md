@@ -23,7 +23,7 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 | F5 | Procurement: reorder checks, RFQ drafts, PO drafts | `/procurement`, `packages/agents/src/tools/write.ts` |
 | F6 | Collections: overdue buckets, reminder drafts | `/collections`, `list_overdue` tool |
 | F7 | Approvals inbox: policy engine (auto/ask/deny) | `/approvals`, `packages/core/src/policy.ts` |
-| F8 | Connectors: Tally (desktop), CSV, GSP, WhatsApp | `packages/connectors/`, `apps/connector-desktop/` |
+| F8 | Connectors: Tally (XML-over-HTTP + desktop agent), Zoho Books (OAuth), WhatsApp, CSV, GSP — live test/sync/push | `packages/connectors/`, `apps/connector-desktop/` |
 | F9 | Voice (Sarvam STT) & WhatsApp channel: questions, approvals (`approve APPR-xxxxxxxx`), voice notes | `POST /api/webhooks/whatsapp`, `packages/connectors/src/sarvam.ts` |
 | F10 | Observability: traces, metering, audit log | `/audit`, `traceRun`/`meter`/`audit` in `packages/db` |
 | — | Vertical packs (fabrication / FMCG / scrap / exports) | `packages/core/src/packs.ts` |
