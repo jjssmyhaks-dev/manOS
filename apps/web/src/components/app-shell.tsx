@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import { ShadowBanner } from '@/components/shadow-banner';
 import {
   MessageSquareText, LayoutDashboard, FileText, ShoppingCart, BellRing,
@@ -22,9 +23,20 @@ const NAV = [
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
+interface MeUser {
+  email: string;
+  name: string | null;
+  org: { name: string; slug: string } | null;
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [orgSlug, setOrgSlug] = useState<string | null>(null);
+  const router = useRouter();
+  const [me, setMe] = useState<MeUser | null>(null);
+
+  useEffect(() => {
+    fetch('/api/auth/me').then((r) => r.json()).then((d) => setMe(d.user ?? null)).catch(() => {});
+  }, []);
 
   return (
     <div className="flex min-h-screen">
@@ -50,9 +62,46 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="border-t p-3 text-xs text-muted-foreground">
-          P0 build · Next.js + AI SDK + AI Elements
-        </div>
+        {me ? (
+          <div className="border-t p-3">
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                {(me.name?.[0] ?? me.email[0] ?? 'F').toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium">{me.name?.trim() || me.email}</div>
+                <div className="truncate text-[11px] text-muted-foreground">{me.org?.name ?? me.email}</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                await fetch('/api/auth/signout', { method: 'POST' });
+                router.push('/');
+              }}
+              className="mt-2 w-full rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+            >
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="border-t p-3">
+            <div className="flex gap-2">
+              <Link
+                href="/signin"
+                className="flex-1 rounded-md border px-2 py-1 text-center text-xs text-muted-foreground hover:bg-muted"
+              >
+                Sign in
+              </Link>
+              <Link
+                href="/signup"
+                className="flex-1 rounded-md bg-primary px-2 py-1 text-center text-xs text-primary-foreground hover:bg-primary/90"
+              >
+                Get started
+              </Link>
+            </div>
+          </div>
+        )}
       </aside>
       <main className="flex-1 min-w-0">
         <ShadowBanner />

@@ -109,8 +109,21 @@ npm run build        # production build of apps/web
 ```
 
 First page load auto-seeds the demo org **Precision Metalworks Pvt Ltd** (fabrication pack)
-with parties, items, orders, invoices, job cards and stock ledger. Switch orgs / approval
-policies in **Settings**. No environment variables needed in dev.
+with parties, items, orders, invoices, job cards and stock ledger. Approval policies live in
+**Settings**. No environment variables needed in dev.
+
+### Accounts & demo
+
+- **Sign up** (`/signup`) creates a real workspace — named after the subscriber's company and
+  seeded with sample data — plus an owner account. Passwords are scrypt-hashed; sessions are
+  httpOnly cookies backed by a server-side `sessions` table (30-day expiry). Auth API routes:
+  `apps/web/src/app/api/auth/` — `signup`, `signin`, `signout`, `me`.
+- **No-signup demo** still works: without a session the app runs against the seeded demo
+  organizations, switchable in **Settings → Workspaces (demo)**. That selector is shown only
+  to anonymous visitors — signed-in users are pinned to their own workspace (`getSession`
+  in `apps/web/src/lib/session.ts` prefers the session user's org over the demo cookie).
+- The app sidebar shows the signed-in user (avatar chip + **Sign out**), or Sign in /
+  Get started links for anonymous visitors.
 
 ### Environment (production)
 

@@ -59,6 +59,7 @@ export function SettingsClient() {
   const [autoSend, setAutoSend] = useState(false);
   const [notifyMsg, setNotifyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [jobs, setJobs] = useState<AgentJobRow[]>([]);
+  const [isSignedIn, setIsSignedIn] = useState(false);
   const [jobSchedule, setJobSchedule] = useState('daily');
   const [jobInstruction, setJobInstruction] = useState('');
   const [jobMsg, setJobMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -79,6 +80,7 @@ export function SettingsClient() {
     const o = await fetch('/api/org').then((r) => r.json());
     setOrgs(o.orgs ?? []);
     setCurrent(o.session?.orgSlug ?? null);
+    fetch('/api/auth/me').then((r) => r.json()).then((m) => setIsSignedIn(Boolean(m.user))).catch(() => {});
     fetch('/api/agent-jobs').then((r) => r.json()).then((d) => setJobs(d.jobs ?? [])).catch(() => {});
   }, []);
 
@@ -431,31 +433,36 @@ export function SettingsClient() {
         </CardContent>
       </Card>
 
-      {/* Demo workspaces */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Workspaces (demo)</CardTitle>
-          <CardDescription>Try the product as a different factory — each workspace ships with its own sample data.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {orgs.map((o) => (
-            <div key={o.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-              <div>
-                <span className="font-medium">{o.name}</span>
-                <span className="ml-2 text-xs text-muted-foreground">{o.vertical}</span>
-              </div>
-              {current === o.slug ? (
-                <Badge variant="success">current</Badge>
-              ) : (
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => seedOrg(o.slug)}>Load sample data</Button>
-                  <Button size="sm" variant="outline" onClick={() => switchOrg(o.slug)}>Switch</Button>
+      {/* Demo workspaces — for signed-in users the workspace is pinned to their account, so the selector is inert and hidden */}
+      {!isSignedIn && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Workspaces (demo)</CardTitle>
+            <CardDescription>Try the product as a different factory — each workspace ships with its own sample data.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {orgs.map((o) => (
+              <div key={o.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                <div>
+                  <span className="font-medium">{o.name}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">{o.vertical}</span>
                 </div>
-              )}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+                {current === o.slug ? (
+                  <Badge variant="success">current</Badge>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => seedOrg(o.slug)}>Load sample data</Button>
+                    <Button size="sm" variant="outline" onClick={() => switchOrg(o.slug)}>Switch</Button>
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              Signed in? Your workspace follows your account — the demo selector only applies without a sign-in.
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
