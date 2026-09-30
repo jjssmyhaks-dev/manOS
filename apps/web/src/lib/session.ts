@@ -1,10 +1,11 @@
 import { cookies } from 'next/headers';
 import { query, seedDemoData } from '@factory/db';
+import { getSessionUser } from '@/lib/auth';
 
 /**
- * Dev session (PRD F1 workspace/onboarding): in this build the auth boundary
- * is a demo org selector cookie; production swaps to Supabase Auth (email/
- * phone OTP) without touching call sites — every data path takes orgId.
+ * Session resolution: a signed-in user's workspace wins; without a session
+ * the demo org-selector cookie keeps the no-signup demo working (PRD F1).
+ * Every data path takes orgId, so both paths share all call sites.
  */
 
 export interface Session {
@@ -31,6 +32,26 @@ export async function listDemoOrgs(): Promise<Array<{ id: string; name: string; 
 }
 
 export async function getSession(): Promise<Session> {
+  // a signed-in user is pinned to their own workspace
+  const user = await getSessionUser();
+  if (user) {
+    const rows = await query<{ name: string; slug: string; vertical: string }>(
+      'select name, slug, vertical from organizations where id = $1 limit 1',
+      [user.orgId]
+    );
+    if (rows[0]) {
+      return {
+        orgId: user.orgId,
+        orgName: rows[0].name,
+        orgSlug: rows[0].slug,
+        vertical: rows[0].vertical,
+        role: user.role,
+        userName: user.name ?? user.email,
+      };
+    }
+  }
+
+  // demo path: org-selector cookie
   const orgs = await listDemoOrgs();
   const jar = await cookies();
   const slug = jar.get(ORG_COOKIE)?.value;

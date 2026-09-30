@@ -106,7 +106,19 @@ create table if not exists users (
   name text,
   role text not null default 'owner', -- owner|manager|purchase|accounts|sales|operator|admin
   locale text not null default 'en',
+  password_hash text,
   created_at timestamptz not null default now()
+);
+alter table users add column if not exists password_hash text;
+
+-- server-side sessions (token = random 32-byte hex, stored hashed-at-rest is
+-- overkill for this deployment; the cookie carries the token, httpOnly)
+create table if not exists sessions (
+  token text primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  org_id uuid not null references organizations(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null
 );
 
 create table if not exists entities (

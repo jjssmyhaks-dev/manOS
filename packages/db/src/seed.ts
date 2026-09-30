@@ -48,16 +48,19 @@ function mulberry(seed: number): () => number {
   };
 }
 
-export async function seedDemoData(orgSlug = 'precision-metalworks'): Promise<{ orgId: string; counts: Record<string, number> }> {
+export async function seedDemoData(
+  orgSlug = 'precision-metalworks',
+  opts: { name?: string; vertical?: 'fabrication' | 'fmcg' | 'scrap' | 'exports' } = {}
+): Promise<{ orgId: string; counts: Record<string, number> }> {
   const db = await initDb();
   const org = SEED_ORGS.find((o) => o.slug === orgSlug) ?? SEED_ORGS[0]!;
   const rnd = mulberry(42);
 
-  // org row
+  // org row (opts.name lets signups get a workspace under their own company)
   const orgRows = await query<{ id: string }>(
     `insert into organizations (name, slug, vertical) values ($1,$2,$3)
      on conflict (slug) do update set name=excluded.name returning id`,
-    [org.name, org.slug, org.vertical],
+    [opts.name ?? org.name, orgSlug, opts.vertical ?? org.vertical],
     db
   );
   const orgId = orgRows[0]!.id;

@@ -3,8 +3,10 @@ import {
   parseWebhook,
   whatsappEnvConfig,
   sendWhatsAppText,
+  sendWhatsAppAudio,
   transcribeVoiceNote,
   fetchWhatsappMedia,
+  synthesizeSpeech,
 } from '@factory/connectors';
 import { query, audit } from '@factory/db';
 import {
@@ -181,12 +183,30 @@ export async function POST(req: Request) {
         channel: 'whatsapp',
       });
       const mode1 = await replyTo(msg.from, reply);
+      // they spoke, so speak back: Sarvam Bulbul TTS as a voice note
+      let ttsMode: string = 'disabled';
+      const speech = await synthesizeSpeech(reply);
+      if (speech.ok && speech.audioBase64) {
+        const envCfg2 = whatsappEnvConfig();
+        if (envCfg2.echo) {
+          ttsMode = 'echo';
+        } else {
+          const audioSend = await sendWhatsAppAudio(
+            { token: envCfg2.token!, phoneNumberId: envCfg2.phoneNumberId!, graphVersion: envCfg2.graphVersion },
+            msg.from,
+            { base64: speech.audioBase64, mimeType: speech.mimeType }
+          );
+          ttsMode = audioSend.ok ? 'sent' : `error:${(audioSend.error ?? '').slice(0, 40)}`;
+        }
+      } else {
+        ttsMode = `skip:${(speech.error ?? '').slice(0, 30)}`;
+      }
       await audit(target.orgId, 'agent', 'whatsapp.voice_note', {
         entityType: 'conversation',
         entityId: conversationId,
-        metadata: { messageId: msg.messageId, transcript: transcript.slice(0, 300), replied: mode1 },
+        metadata: { messageId: msg.messageId, transcript: transcript.slice(0, 300), replied: mode1, tts: ttsMode },
       });
-      handled.push(`voice:${msg.messageId}:agent`);
+      handled.push(`voice:${msg.messageId}:agent:${ttsMode.split(':')[0]}`);
       continue;
     }
 

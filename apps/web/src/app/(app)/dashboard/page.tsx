@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { DashboardClient } from '@/components/dashboard-client';
 import { ConnectorHealthCard } from '@/components/connector-health-card';
 import { AnomaliesCard } from '@/components/anomalies-card';
+import { OverrideCard } from '@/components/override-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,6 +73,8 @@ export default async function DashboardPage() {
       <ConnectorHealthCard report={health} />
 
       <AnomaliesCard />
+
+      <OverrideCard />
 
       <DashboardClient />
     </div>

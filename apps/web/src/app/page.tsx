@@ -2,6 +2,37 @@ import Link from 'next/link';
 import { ArrowRight, Play } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { query } from '@factory/db';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * Landing page — dynamic: the numbers shown are REAL counts from the live
+ * platform (workspaces, agent actions, IRNs, documents read), so the marketing
+ * page demonstrates the product with the product's own data.
+ */
+
+async function getPlatformStats(): Promise<{
+  workspaces: number; actions: number; documents: number; irns: number; reminders: number;
+}> {
+  try {
+    const rows = await query<{ workspaces: string; actions: string; documents: string; irns: string; reminders: string }>(
+      `select
+         (select count(*) from organizations) as workspaces,
+         (select count(*) from agent_actions where status = 'executed') as actions,
+         (select count(*) from documents) as documents,
+         (select count(*) from entities where data->>'irn' is not null) as irns,
+         (select count(*) from notifications where template = 'payment_reminder') as reminders`
+    );
+    const r = rows[0]!;
+    return {
+      workspaces: Number(r.workspaces), actions: Number(r.actions),
+      documents: Number(r.documents), irns: Number(r.irns), reminders: Number(r.reminders),
+    };
+  } catch {
+    return { workspaces: 0, actions: 0, documents: 0, irns: 0, reminders: 0 };
+  }
+}
 
 /**
  * Marketing landing page — design language borrowed from the HyperComply
@@ -13,7 +44,7 @@ const NAV = [
   { href: '#product', label: 'Product' },
   { href: '#packs', label: 'Vertical packs' },
   { href: '#governance', label: 'Governance' },
-  { href: '#learn', label: 'Learn more' },
+  { href: '#pricing', label: 'Pricing' },
   { href: '#why', label: 'Why Factory?' },
 ];
 
@@ -62,7 +93,8 @@ function AgentPreview() {
   );
 }
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const stats = await getPlatformStats();
   return (
     <main id="top" className="min-h-screen overflow-hidden bg-background text-foreground">
       <a href="#product" className="block bg-banner px-4 py-2.5 text-center text-sm font-semibold underline underline-offset-2 text-brand-deep">
@@ -77,9 +109,9 @@ export default function LandingPage() {
           ))}
         </nav>
         <div className="hidden items-center gap-7 lg:flex">
-          <Link href="/chat" className="text-sm font-medium">Sign in</Link>
+          <Link href="/signin" className="text-sm font-medium">Sign in</Link>
           <Button variant="demo" size="demo" asChild>
-            <Link href="/chat">Open the factory agent</Link>
+            <Link href="/signup">Start free</Link>
           </Button>
         </div>
       </header>
@@ -96,25 +128,38 @@ export default function LandingPage() {
             production, procurement. Every number comes from your data, every action goes
             through your approval policy.
           </p>
-          <form
-            className="mt-5 grid w-full max-w-full grid-cols-[minmax(0,1fr)] gap-2 sm:max-w-[470px] sm:grid-cols-[minmax(0,1fr)_auto]"
-            action="/chat"
-          >
-            <Input
-              aria-label="Work email"
-              type="email"
-              name="email"
-              placeholder="Enter Your Work Email"
-              className="h-12 min-w-0 rounded border-border bg-card px-4 shadow-none"
-            />
-            <Button variant="demo" size="demo" type="submit" className="w-full sm:w-auto">Request A Demo</Button>
-          </form>
+          <div className="mt-5 flex w-full max-w-full flex-col gap-2 sm:max-w-[470px] sm:flex-row">
+            <Button variant="demo" size="demo" asChild className="w-full sm:w-auto">
+              <Link href="/signup">Create your workspace — free</Link>
+            </Button>
+            <Button size="demo" variant="outline" asChild className="w-full sm:w-auto">
+              <Link href="/chat">Or explore the live demo</Link>
+            </Button>
+          </div>
           <p className="mt-3 text-xs text-muted-foreground">
-            Demo environment seeds a full fabrication factory — no signup, no card.
+            Every workspace starts in shadow mode — the AI drafts, you approve. Sample factory included, no card.
           </p>
         </div>
         <div className="relative min-w-0 lg:-mr-20 lg:translate-x-4">
           <AgentPreview />
+        </div>
+      </section>
+
+      {/* live platform stats — real numbers, refreshed per request */}
+      <section aria-label="Live platform activity" className="border-y bg-muted/40 py-6">
+        <div className="mx-auto grid max-w-[1110px] grid-cols-2 gap-6 px-6 text-center md:grid-cols-5">
+          {[
+            ['Workspaces running', stats.workspaces.toLocaleString('en-IN')],
+            ['AI actions executed', stats.actions.toLocaleString('en-IN')],
+            ['Documents read by the agent', stats.documents.toLocaleString('en-IN')],
+            ['E-invoice IRNs registered', stats.irns.toLocaleString('en-IN')],
+            ['Payment reminders sent', stats.reminders.toLocaleString('en-IN')],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <div className="text-2xl font-semibold text-brand-deep">{value}</div>
+              <div className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -242,6 +287,68 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* pricing */}
+      <section id="pricing" className="mx-auto max-w-[1110px] px-6 py-24">
+        <div className="text-center">
+          <p className="text-sm font-semibold uppercase text-muted-foreground">Pricing</p>
+          <h2 className="mx-auto mt-3 max-w-2xl text-4xl font-normal leading-tight text-brand-deep md:text-5xl">
+            One flat price. AI included. Unlimited users.
+          </h2>
+          <p className="mx-auto mt-4 max-w-2xl text-muted-foreground">
+            The AI is billed by us, not by you — no API keys, no per-seat math, no surprise bills.
+            Every plan starts with a shadow-mode trial on your own data.
+          </p>
+        </div>
+        <div className="mt-12 grid gap-5 md:grid-cols-3">
+          {[
+            {
+              name: 'Starter', price: '₹0', period: 'for 14 days', blurb: 'Your factory, live on the platform this week.',
+              features: ['Full agent on your own data', 'Shadow mode — drafts, nothing executes', 'WhatsApp alerts & approvals', '1 accounting connector'],
+              cta: 'Start free', href: '/signup', highlight: false,
+            },
+            {
+              name: 'Factory', price: '₹9,999', period: 'per month · flat', blurb: 'The daily driver for a single factory.',
+              features: ['Everything in Starter, live', 'AI included — Smartest or Value class', 'Unlimited users · unlimited WhatsApp', 'Tally + Zoho/QuickBooks sync, e-invoicing', 'AI Activity log with 24h undo'],
+              cta: 'Start with Factory', href: '/signup', highlight: true,
+            },
+            {
+              name: 'Group', price: 'Let\u2019s talk', period: 'multi-factory · exports', blurb: 'For groups running scrap yards or export desks.',
+              features: ['Multiple workspaces, one roof', 'Weighbridge & export packs', 'Custom connectors & SLAs', 'Named case-study partnership'],
+              cta: 'Talk to us', href: 'mailto:hello@factoryaios.in?subject=Group%20plan', highlight: false,
+            },
+          ].map((p) => (
+            <div
+              key={p.name}
+              className={`relative rounded-lg border p-6 shadow-sm ${p.highlight ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
+            >
+              {p.highlight && (
+                <span className="absolute -top-3 left-6 rounded-full bg-primary px-3 py-0.5 text-[11px] font-medium text-primary-foreground">Most popular</span>
+              )}
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{p.name}</h3>
+              <div className="mt-2 flex items-baseline gap-1.5">
+                <span className="text-4xl font-semibold text-brand-deep">{p.price}</span>
+                <span className="text-xs text-muted-foreground">{p.period}</span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">{p.blurb}</p>
+              <ul className="mt-4 space-y-2 text-sm">
+                {p.features.map((f) => (
+                  <li key={f} className="flex items-start gap-2">
+                    <svg viewBox="0 0 16 16" className="mt-0.5 h-4 w-4 shrink-0 fill-emerald-600" aria-hidden="true"><path d="M6.5 11L3 7.5 4.1 6.4 6.5 8.8 11.9 3.4 13 4.5z" /></svg>
+                    {f}
+                  </li>
+                ))}
+              </ul>
+              <Button variant={p.highlight ? 'demo' : 'outline'} size="demo" className="mt-6 w-full" asChild>
+                <Link href={p.href}>{p.cta}</Link>
+              </Button>
+            </div>
+          ))}
+        </div>
+        <p className="mt-6 text-center text-xs text-muted-foreground">
+          Pilot pricing for design partners: free or heavily discounted in exchange for a committed case study (PRD v2 §10).
+        </p>
+      </section>
+
       {/* quote CTA */}
       <section id="why" className="bg-brand-soft px-6 py-24 text-center">
         <p className="text-sm font-semibold uppercase">What factory owners are saying</p>
@@ -257,10 +364,10 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-[1110px] flex-col items-start justify-between gap-8 md:flex-row md:items-center">
           <Brand />
           <nav className="flex flex-wrap items-center gap-8 text-sm text-muted-foreground" aria-label="Footer">
+            <Link href="/trust" className="hover:text-foreground">Trust</Link>
             <Link href="/chat" className="hover:text-foreground">Live demo</Link>
-            <Link href="/dashboard" className="hover:text-foreground">Dashboard</Link>
-            <Link href="/documents" className="hover:text-foreground">Documents</Link>
-            <Link href="/audit" className="hover:text-foreground">Audit log</Link>
+            <Link href="/signin" className="hover:text-foreground">Sign in</Link>
+            <Link href="/signup" className="hover:text-foreground">Start free</Link>
           </nav>
           <p className="text-xs text-muted-foreground">© 2026 Factory AI OS · Made for Indian manufacturing</p>
         </div>
