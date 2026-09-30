@@ -61,8 +61,7 @@ async function resolveWorstOverdue(orgId: string): Promise<ResolvedInvoice | nul
 /** Map one anomaly to a concrete draft action. */
 export async function proposeRemediation(orgId: string, a: Anomaly): Promise<RemediationProposal | null> {
   switch (a.kind) {
-    case 'receivables_spike':
-    case 'duplicate_invoice': {
+    case 'receivables_spike': {
       const inv = await resolveWorstOverdue(orgId);
       if (!inv) return null;
       return {
@@ -80,6 +79,36 @@ export async function proposeRemediation(orgId: string, a: Anomaly): Promise<Rem
         },
         preview: `Send WhatsApp payment reminder to ${inv.customer} for ${inv.invoice} (₹${inv.amount.toLocaleString('en-IN')}, ${inv.overdueDays}d overdue)`,
         risk: 'external',
+        rationale: a.detail,
+      };
+    }
+    case 'duplicate_invoice': {
+      // the customer isn't at fault — the right fix is a credit-note draft
+      // against the flagged invoice, not a payment chase
+      const inv = a.entityId
+        ? await query<{ id: string; code: string | null; party_id: string | null; amount: string; customer: string | null }>(
+            `select e.id, e.code, e.party_id, e.amount,
+                    coalesce((select coalesce(p.name, p.data->>'name') from entities p where p.id = e.party_id), '(unknown)') as customer
+             from entities e where e.org_id = $1 and e.id = $2 limit 1`,
+            [orgId, a.entityId]
+          )
+        : [];
+      const invRow = inv[0];
+      if (!invRow) return null;
+      return {
+        anomalyKind: a.kind,
+        title: a.title,
+        actionType: 'credit_note_draft',
+        payload: {
+          invoiceId: invRow.id,
+          invoice: invRow.code,
+          customerId: invRow.party_id ?? undefined,
+          customer: invRow.customer,
+          amount: Number(invRow.amount),
+          reason: 'Possible duplicate billing detected by anomaly scan',
+        },
+        preview: `Draft credit note ₹${Number(invRow.amount).toLocaleString('en-IN')} against ${invRow.code ?? 'invoice'} for ${invRow.customer} (duplicate check)`,
+        risk: 'write',
         rationale: a.detail,
       };
     }
@@ -159,29 +188,46 @@ export async function proposeTopRemediation(orgId: string): Promise<ProposalOutc
 }
 
 /**
- * Audit-only bookkeeping when an approval created by remediation is decided.
- * Execution happens once via decideApproval's executor — this must NOT
- * re-run the action, it only ties the decision back to the finding.
+ * Bookkeeping + outcome reporting when an approval created by remediation is
+ * decided. Execution happens once via decideApproval's executor — this must
+ * NOT re-run the action; it ties the decision back to the finding (audit)
+ * and messages the owner's WhatsApp with the outcome (the loop closes where
+ * it opened).
  */
 export async function decideProposal(
   orgId: string,
   approvalId: string,
   approved: boolean,
-  decidedBy: string
+  decidedBy: string,
+  execResult?: { status?: string; result?: { ok?: boolean; result?: unknown }; error?: string }
 ): Promise<{ ok: boolean; error?: string }> {
-  const rows = await query<{ payload: Record<string, unknown>; action_type: string }>(
-    'select payload, action_type from approvals where org_id = $1 and id = $2 limit 1',
+  const rows = await query<{ payload: Record<string, unknown>; action_type: string; preview: string | null }>(
+    'select payload, action_type, preview from approvals where org_id = $1 and id = $2 limit 1',
     [orgId, approvalId]
   );
   const appr = rows[0];
   if (!appr) return { ok: false, error: 'approval not found' };
   const payload = typeof appr.payload === 'string' ? (JSON.parse(appr.payload || '{}') as Record<string, unknown>) : (appr.payload ?? {});
-  const isRemediation = payload.__remediationOf != null;
-  if (!isRemediation) return { ok: true };
+  const finding = payload.__remediationOf as string | undefined;
+  if (!finding) return { ok: true };
 
   await audit(orgId, decidedBy, approved ? 'remediation.approved' : 'remediation.rejected', {
     entityId: approvalId,
-    metadata: { remediation: true, actionType: appr.action_type, finding: payload.__remediationOf },
+    metadata: { remediation: true, actionType: appr.action_type, finding },
   });
+
+  const detail = String(payload.__remediationTitle ?? appr.preview ?? finding);
+  const executed = approved && execResult?.status === 'executed' && execResult.result?.ok !== false;
+  const body = approved
+    ? executed
+      ? `✅ *Auto-fix executed.* ${detail}\nI've logged everything in the audit trail.`
+      : `⚠️ You approved the fix, but execution failed — I've flagged it in the audit trail. ${detail}`
+    : `🚫 Fix rejected — I'll leave it on the *Needs attention* list. ${detail}`;
+  try {
+    const { notifyOwnerDirect } = await import('./notify.js');
+    await notifyOwnerDirect(orgId, body, 'remediation_outcome');
+  } catch {
+    // outcome reporting is best-effort
+  }
   return { ok: true };
 }

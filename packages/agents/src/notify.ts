@@ -176,3 +176,110 @@ function safeParse(s: string): unknown {
 function maskPhone(p: string): string {
   return p.length > 4 ? `***${p.slice(-4)}` : '***';
 }
+
+// --- approvals from WhatsApp --------------------------------------------------
+
+export type ApprovalCommand =
+  | { cmd: 'approve' | 'reject'; approvalId: string }
+  | { cmd: 'pending' }
+  | { cmd: 'help' }
+  | { cmd: 'other'; text: string };
+
+/** Recognise approval commands at the start of an inbound message. */
+export function parseApprovalCommand(text: string): ApprovalCommand {
+  const t = text.trim();
+  const idm = t.match(/^\s*(approve|reject)\s+((?:[0-9a-f]{8,}|APPR-)[0-9a-z-]*)/i);
+  if (idm) return { cmd: idm[1]!.toLowerCase() as 'approve' | 'reject', approvalId: idm[2]! };
+  if (/^\s*(pending|approvals?|inbox)\s*$/i.test(t)) return { cmd: 'pending' };
+  if (/^\s*(help|start|menu)\s*$/i.test(t)) return { cmd: 'help' };
+  return { cmd: 'other', text: t };
+}
+
+/** Short public handle: APPR-XXXXXXXX (shown in WhatsApp lists/messages). */
+export function approvalShortCode(id: string): string {
+  return `APPR-${id.replace(/-/g, '').slice(0, 8)}`;
+}
+
+/** Format the pending-approvals list for a small screen. */
+export function pendingListMessage(rows: Array<{ id: string; action_type: string; preview: string | null; created_at: string | Date }>): string {
+  if (rows.length === 0) return 'Nothing is waiting for your approval — all clear ✅';
+  const lines = rows.map(
+    (r) => `• ${approvalShortCode(r.id)} — ${r.preview ?? r.action_type}`
+  );
+  return [
+    `🕓 *${rows.length} waiting for your approval*`,
+    '',
+    ...lines.slice(0, 10),
+    '',
+    rows.length > 10 ? `…and ${rows.length - 10} more in the web inbox.` : '',
+    'Reply *approve APPR-xxxxxxxx* or *reject APPR-xxxxxxxx*.',
+  ].filter(Boolean).join('\n');
+}
+
+/** Resolve an APPR-xxxxxxxx short code (or full id) back to the approval. */
+export async function resolveApprovalByCode(orgId: string, code: string): Promise<string | null> {
+  const bare = code.replace(/^APPR-/i, '');
+  const rows = await query<{ id: string }>(
+    "select id from approvals where org_id = $1 and status = 'pending' and replace(id::text,'-','') like $2 limit 2",
+    [orgId, `${bare}%`]
+  );
+  if (rows.length > 1) return null; // ambiguous prefix — refuse to guess
+  return rows[0]?.id ?? null;
+}
+
+/** In WhatsApp-echo mode, notify the owner without a real send. */
+export async function notifyOwnerDirect(orgId: string, body: string, template: string): Promise<void> {
+  const ns = await getNotifySettings(orgId);
+  await query(
+    `insert into notifications (org_id, channel, to_addr, template, body, status)
+     values ($1,'whatsapp',$2,$3,$4,'queued')`,
+    [orgId, ns.ownerPhone ?? 'owner', template, body]
+  );
+}
+
+export interface DecideFromWhatsAppResult {
+  ok: boolean;
+  reply: string;
+  approvalId?: string;
+}
+
+/**
+ * Decide an approval straight from the owner's phone. Executes exactly once
+ * via decideApproval (approve) or flips status (reject), then reports the
+ * outcome back to WhatsApp — the closed loop's last mile. The executor
+ * receives the approval's action type + payload (looked up here, so callers
+ * never touch raw rows).
+ */
+export async function decideApprovalFromWhatsApp(
+  orgId: string,
+  codeOrId: string,
+  decision: 'approve' | 'reject',
+  decidedBy: string,
+  execute: (actionType: string, payload: unknown) => Promise<{ ok: boolean; result?: unknown; error?: string }>
+): Promise<DecideFromWhatsAppResult> {
+  const { decideApproval } = await import('@factory/core');
+  const id = await resolveApprovalByCode(orgId, codeOrId);
+  if (!id) {
+    return { ok: false, reply: `I couldn't find a pending approval matching *${codeOrId}* — send *pending* to see what's waiting.` };
+  }
+  const meta = await query<{ preview: string | null; action_type: string }>(
+    'select preview, action_type from approvals where id = $1 limit 1',
+    [id]
+  );
+  const what = meta[0]?.preview ?? meta[0]?.action_type ?? 'request';
+  const res = await decideApproval(id, decision, decidedBy, (payload) =>
+    execute(meta[0]?.action_type ?? 'send_reminder', payload)
+  );
+  const status = (res as { status?: string }).status;
+  const done = decision === 'reject' || status === 'executed';
+  const body = [
+    decision === 'approve' ? (done ? '✅ *Done.*' : '⚠️ Approved, but execution hit a snag:') : '🚫 *Rejected.*',
+    what,
+  ].join('\n');
+  await notifyOwnerDirect(orgId, body, 'approval_decision');
+  return {
+    ok: true,
+    approvalId: id,
+    reply: decision === 'approve' ? (done ? `✅ Done: ${what}` : `⚠️ Approved but execution failed — check the audit page. ${what}`) : `🚫 Rejected: ${what}`,
+  };
+}

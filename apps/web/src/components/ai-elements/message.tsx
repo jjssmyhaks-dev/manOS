@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { BranchPicker } from '@/components/ai-elements/branch-picker';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { Response as AiResponse } from '@/components/ai-elements/response';
+import { Chart, chartRowsFromToolOutput } from '@/components/ai-elements/chart';
 
 /**
  * Vercel AI Elements — Message
@@ -83,14 +84,20 @@ export function MessageContent({
             const toolPart = part as { toolName?: string; state?: string; input?: unknown; output?: unknown };
             // AI SDK v5 encodes the tool name in the part type: 'tool-<name>'
             const toolName = toolPart.toolName ?? ((part.type as string).slice('tool-'.length) || 'tool');
+            // inline chart for grouped data results (ask_data)
+            const chartRows = toolName === 'ask_data' && toolPart.state === 'output-available'
+              ? chartRowsFromToolOutput(toolPart.output)
+              : null;
             return (
-              <ToolMessagePreview
-                key={i}
-                toolName={toolName}
-                state={toolPart.state}
-                input={toolPart.input}
-                output={toolPart.output}
-              />
+              <div key={i} className="space-y-1">
+                {chartRows && <Chart rows={chartRows} title="Data" />}
+                <ToolMessagePreview
+                  toolName={toolName}
+                  state={toolPart.state}
+                  input={toolPart.input}
+                  output={toolPart.output}
+                />
+              </div>
             );
           }
           return null;

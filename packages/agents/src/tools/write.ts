@@ -5,6 +5,38 @@ import { checkPolicyAndQueue } from '@factory/core';
 import type { AgentContext } from './read.js';
 
 /**
+ * Learning memory applied where it matters — before money moves.
+ * Active org facts are matched for price floors/ceilings and applied to
+ * drafted POs (and mirrored at execution for agent-created SOs), so a
+ * correction the owner made in chat ("never sell below ₹350") is enforced
+ * mechanically, not just remembered.
+ */
+
+interface PriceRule { min?: number; max?: number; fact: string }
+
+async function priceRulesFromFacts(orgId: string): Promise<PriceRule[]> {
+  const facts = await query<{ fact: string }>(
+    "select fact from org_facts where org_id = $1 and status = 'active'",
+    [orgId]
+  );
+  const rules: PriceRule[] = [];
+  for (const { fact } of facts) {
+    const amounts = [...fact.matchAll(/(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/gi)]
+      .map((m) => Number(m[1]!.replace(/,/g, '')))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!amounts.length) continue;
+    const amt = amounts[0]!;
+    const lower = /below|under|less than|minimum|at least|no less|kam se kam/i.test(fact);
+    const upper = /above|over|more than|maximum|not more|up to|zyada/i.test(fact);
+    const selling = /sell|selling|quote|quoting|invoice|bill|rate/i.test(fact);
+    if (!selling) continue;
+    if (lower) rules.push({ min: amt, fact });
+    else if (upper) rules.push({ max: amt, fact });
+  }
+  return rules;
+}
+
+/**
  * Write-risk tools: every one routes through the policy engine
  * (auto executes, ask queues an approval, deny refuses) and every execution
  * lands in the audit log.
@@ -84,6 +116,18 @@ export async function executeAction(
       );
       return { ok: true, result: { poId: e.id, poNo: e.code } };
     }
+    case 'credit_note_draft': {
+      // duplicate-billing fix: a credit note draft against the flagged invoice.
+      // Stays a draft until accounts posts it in Tally — we never reduce money
+      // owed on our own.
+      const p = payload as { invoiceId?: string; invoice?: string; customerId?: string; customer?: string; amount?: number; reason?: string };
+      const e = await insertEntity({
+        orgId, type: 'credit_note', status: 'draft', partyId: p.customerId,
+        amount: p.amount ?? 0, source: 'agent',
+        data: { againstInvoiceId: p.invoiceId, againstInvoice: p.invoice, customer: p.customer, reason: p.reason },
+      });
+      return { ok: true, result: { creditNoteId: e.id, creditNoteNo: e.code } };
+    }
     case 'tally_push': {
       // In dev this records the push; the desktop connector picks it up (packages/connectors tally adapter)
       await query(
@@ -94,6 +138,16 @@ export async function executeAction(
     }
     case 'so_create': {
       const p = payload as { customerId?: string; customer?: string; itemId?: string; item?: string; qty?: number; rate?: number; poNumber?: string };
+      // memory guard: enforce owner price rules at execution time too
+      const rules = await priceRulesFromFacts(orgId);
+      for (const r of rules) {
+        if (r.min != null && (p.rate ?? 0) < r.min) {
+          return { ok: false, error: `Blocked by your own rule: “${r.fact}” — rate ₹${p.rate ?? 0} is below ₹${r.min}.` };
+        }
+        if (r.max != null && (p.rate ?? 0) > r.max) {
+          return { ok: false, error: `Blocked by your own rule: “${r.fact}” — rate ₹${p.rate ?? 0} is above ₹${r.max}.` };
+        }
+      }
       const e = await insertEntity({
         orgId, type: 'sales_order', status: 'confirmed', partyId: p.customerId, itemId: p.itemId,
         qty: p.qty ?? 0, rate: p.rate ?? 0, amount: (p.qty ?? 0) * (p.rate ?? 0), date: new Date().toISOString().slice(0, 10),
@@ -244,6 +298,22 @@ export const createPoDraftTool = (ctx: AgentContext) =>
         [ctx.orgId, `%${p.vendorName}%`]
       );
       if (!vendorRows[0]) return { decision: 'deny' as const, reason: `Vendor '${p.vendorName}' not found in party master.` };
+      // memory guard: warn when the draft violates a learned price rule
+      const rules = await priceRulesFromFacts(ctx.orgId);
+      for (const r of rules) {
+        if (r.max != null && p.rate > r.max) {
+          return {
+            decision: 'deny' as const,
+            reason: `Your own rule says: “${r.fact}”. Drafted rate ₹${p.rate} exceeds it — adjust the rate or update the rule in Settings.`,
+          };
+        }
+        if (r.min != null && p.rate < r.min) {
+          return {
+            decision: 'deny' as const,
+            reason: `Your own rule says: “${r.fact}”. Drafted rate ₹${p.rate} is below it — adjust the rate or update the rule in Settings.`,
+          };
+        }
+      }
       const payload = {
         vendorId: vendorRows[0].id, vendorName: vendorRows[0].name ?? p.vendorName,
         itemId: itemRows[0].id, itemName: p.itemName, qty: p.qty, rate: p.rate, uom: p.uom,

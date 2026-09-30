@@ -263,6 +263,19 @@ create table if not exists notifications (
 -- older deployments created notifications without result; patch in place
 alter table notifications add column if not exists result jsonb;
 
+-- WhatsApp media (voice notes): webhook stores the id; the media fetch fills
+-- the URL so the STT pipeline can download and transcribe it
+create table if not exists wa_media (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  media_id text not null,
+  mime_type text,
+  url text,
+  status text not null default 'pending', -- pending|ready|transcribed|failed
+  transcript text,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists documents (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null,

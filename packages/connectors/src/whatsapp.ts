@@ -11,6 +11,7 @@ export interface WhatsAppInboundMessage {
   name?: string;
   text?: string;
   voiceMediaId?: string;
+  voiceMimeType?: string;
   type: string;
   messageId: string;
   timestamp: string;
@@ -34,7 +35,7 @@ export function parseWebhook(body: unknown): WhatsAppInboundMessage[] {
           messages?: Array<{
             from: string; id: string; timestamp: string; type: string;
             text?: { body?: string };
-            audio?: { id?: string };
+            audio?: { id?: string; mime_type?: string };
           }>;
         };
       }>;
@@ -51,6 +52,7 @@ export function parseWebhook(body: unknown): WhatsAppInboundMessage[] {
           type: msg.type,
           text: msg.text?.body,
           voiceMediaId: msg.audio?.id,
+          voiceMimeType: msg.audio?.mime_type,
           messageId: msg.id,
           timestamp: msg.timestamp,
         });

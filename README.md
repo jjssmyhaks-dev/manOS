@@ -24,13 +24,16 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 | F6 | Collections: overdue buckets, reminder drafts | `/collections`, `list_overdue` tool |
 | F7 | Approvals inbox: policy engine (auto/ask/deny) | `/approvals`, `packages/core/src/policy.ts` |
 | F8 | Connectors: Tally (desktop), CSV, GSP, WhatsApp | `packages/connectors/`, `apps/connector-desktop/` |
-| F9 | Voice (STT/TTS) & WhatsApp channel | `POST /api/webhooks/whatsapp`, channel: 'whatsapp' |
+| F9 | Voice (Sarvam STT) & WhatsApp channel: questions, approvals (`approve APPR-xxxxxxxx`), voice notes | `POST /api/webhooks/whatsapp`, `packages/connectors/src/sarvam.ts` |
 | F10 | Observability: traces, metering, audit log | `/audit`, `traceRun`/`meter`/`audit` in `packages/db` |
 | — | Vertical packs (fabrication / FMCG / scrap / exports) | `packages/core/src/packs.ts` |
 | — | Guardrails: role allowlists, PII redaction, prompt-injection isolation | `packages/core/src/guardrails.ts` |
 | — | Semantic metric layer (numbers come from SQL, never the model) | `packages/agents/src/semantic.ts` |
-| — | WhatsApp outbound: Cloud API send with retries, echo mode in dev, notify settings | `packages/connectors/src/whatsapp.ts`, `packages/agents/src/notify.ts`, `/settings` |
-| — | Proactive anomaly agent: price variance, duplicate invoices, receivables spike | `packages/agents/src/anomalies.ts`, `/api/anomalies`, dashboard "Needs attention" card |
+| — | WhatsApp as the product: inbound questions answered by the agent, approvals decided from the phone, voice notes via Sarvam STT | `apps/web/src/app/api/webhooks/whatsapp`, `packages/agents/src/notify.ts` |
+| — | Closed-loop remediation: anomaly → drafted fix (reminder / RFQ / credit note) → approval → execution → WhatsApp outcome | `packages/agents/src/remediation.ts` |
+| — | Conversational BI: `ask_data` group/aggregate over entity tables, rendered as inline charts in chat | `packages/agents/src/tools/read.ts`, `apps/web/src/components/ai-elements/chart.tsx` |
+| — | Learning memory: corrections become reviewable org facts, applied in answers *and enforced in drafts* (price-floor guard on POs/SOs) | `packages/agents/src/memory.ts`, `remember` tool, `priceRulesFromFacts` |
+| — | Proactive anomaly agent: price variance, duplicate invoices (→ credit-note drafts), receivables spike; fixes reported to WhatsApp on decision | `packages/agents/src/anomalies.ts`, `packages/agents/src/remediation.ts` |
 | — | Demand forecast + BOM MRP buy suggestions (4-week horizon) | `packages/agents/src/mrp.ts`, `/procurement`, `run_mrp` agent tool |
 | — | CI: typecheck ×6 workspaces, eval suite, production build | `.github/workflows/ci.yml` |
 
