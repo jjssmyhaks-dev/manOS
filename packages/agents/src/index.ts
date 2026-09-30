@@ -24,6 +24,10 @@ export { checkExportDeadlines, draftBuyerFollowUp, sendBuyerFollowUp, exportFoll
 export type { ExportDeadline, FollowUpDraft } from './exports.js';
 export { generateEInvoice, eInvoiceStatus } from './einvoice.js';
 export type { EInvoiceStatus, GenerateResult } from './einvoice.js';
+export { generateEWayBill } from './eway.js';
+export type { EWbStatus } from './eway.js';
+export { overrideRateReport } from './override-rate.js';
+export type { OverrideReport, WeekOverride } from './override-rate.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';

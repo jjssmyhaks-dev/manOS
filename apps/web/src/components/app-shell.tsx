@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import { ShadowBanner } from '@/components/shadow-banner';
 import {
   MessageSquareText, LayoutDashboard, FileText, ShoppingCart, BellRing,
   CalendarClock, Plug, ScrollText, Settings, Factory, ActivityIcon,
@@ -53,7 +54,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           P0 build · Next.js + AI SDK + AI Elements
         </div>
       </aside>
-      <main className="flex-1 min-w-0">{children}</main>
+      <main className="flex-1 min-w-0">
+        <ShadowBanner />
+        {children}
+      </main>
     </div>
   );
 }

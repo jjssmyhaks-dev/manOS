@@ -104,3 +104,44 @@ export async function connectorHealth(orgId: string, staleAfterMin = STALE_AFTER
     ok: failures.length === 0,
   };
 }
+
+// --- sync history (30-day freshness strip on the Connectors page) ------------
+
+/** Record one sync run (nightly cron or manual) for the freshness strip. */
+export async function recordSyncHistory(
+  orgId: string,
+  connectorType: string,
+  ok: boolean,
+  pulled: number,
+  error?: string,
+  connectorId?: string
+): Promise<void> {
+  try {
+    await query(
+      `insert into connector_syncs (org_id, connector_id, connector_type, ok, pulled, error)
+       values ($1,$2,$3,$4,$5,$6)`,
+      [orgId, connectorId ?? null, connectorType, ok, pulled, error ?? null]
+    );
+  } catch {
+    // history must never break a sync
+  }
+}
+
+export interface SyncDay {
+  day: string;
+  ok: boolean;
+  pulled: number;
+  error: string | null;
+}
+
+/** Last N days of sync runs for one connector type (newest first). */
+export async function getSyncHistory(orgId: string, connectorType: string, days = 30): Promise<SyncDay[]> {
+  const rows = await query<{ day: string; ok: boolean; pulled: number; error: string | null }>(
+    `select to_char(ran_at::date, 'YYYY-MM-DD') as day, ok, pulled, error
+     from connector_syncs
+     where org_id = $1 and connector_type = $2 and ran_at >= now() - ($3 || ' days')::interval
+     order by ran_at desc limit 60`,
+    [orgId, connectorType, String(days)]
+  );
+  return rows;
+}

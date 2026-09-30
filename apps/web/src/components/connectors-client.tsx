@@ -24,6 +24,13 @@ interface ActionResult {
   errors?: string[];
 }
 
+interface SyncDay {
+  day: string;
+  ok: boolean;
+  pulled: number;
+  error: string | null;
+}
+
 const LABELS: Record<string, { title: string; desc: string }> = {
   tally: { title: 'Tally Prime', desc: 'Two-way accounting sync. Test the connection live, pull masters & vouchers, push approved vouchers straight into Tally — or run the desktop agent on the Tally machine.' },
   zoho_books: { title: 'Zoho Books', desc: 'Cloud accounting sync: contacts, items and invoices pull into the agent\u2019s data layer; approved invoices push back to Zoho.' },
@@ -173,11 +180,21 @@ export function ConnectorsClient() {
   const [regInfo, setRegInfo] = useState<{ connectorId: string; deviceToken: string } | null>(null);
   const [messages, setMessages] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [showSetup, setShowSetup] = useState<Record<string, boolean>>({});
+  const [history, setHistory] = useState<Record<string, SyncDay[]>>({});
+
+  const loadHistory = useCallback(async (types: string[]) => {
+    for (const t of types) {
+      fetch(`/api/connectors/history?type=${encodeURIComponent(t)}`).then((r) => r.json()).then((d) => {
+        setHistory((h) => ({ ...h, [t]: d.days ?? [] }));
+      }).catch(() => {});
+    }
+  }, []);
 
   const load = useCallback(async () => {
     const d = await fetch('/api/connectors').then((r) => r.json());
     setRows(d.connectors ?? []);
-  }, []);
+    loadHistory(['tally', 'zoho_books', 'quickbooks']);
+  }, [loadHistory]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -285,7 +302,12 @@ export function ConnectorsClient() {
                       <PlugIcon className="mr-1 h-3 w-3" /> Connect Zoho
                     </Button>
                   )}
-                  {(c.type === 'tally' || c.type === 'quickbooks') && (
+                  {c.type === 'quickbooks' && (
+                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => { window.location.href = '/api/connectors/quickbooks/connect'; }}>
+                      <PlugIcon className="mr-1 h-3 w-3" /> Connect QuickBooks
+                    </Button>
+                  )}
+                  {(c.type === 'tally') && (
                     <Button size="sm" variant="ghost" onClick={() => setShowSetup((s) => ({ ...s, [c.type]: !s[c.type] }))}>
                       <Settings2Icon className="mr-1 h-3 w-3" /> {showSetup[c.type] ? 'Hide setup' : 'Connect / configure'}
                     </Button>
@@ -303,6 +325,19 @@ export function ConnectorsClient() {
                 )}
                 {c.type === 'whatsapp' && (
                   <p className="text-[11px]">Platform-level: the operator sets WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID; owners just add their number in Settings.</p>
+                )}
+                {/* 30-day freshness strip from the nightly sync history */}
+                {(c.type === 'tally' || c.type === 'zoho_books' || c.type === 'quickbooks') && (
+                  <div className="flex items-center gap-1" title="last 30 days of nightly syncs (green = ok)">
+                    {(history[c.type] ?? []).slice(0, 30).reverse().map((d) => (
+                      <span
+                        key={d.day}
+                        title={`${d.day}: ${d.ok ? `${d.pulled} records` : `failed — ${d.error ?? 'error'}`}`}
+                        className={`h-3 w-2 rounded-[2px] ${d.ok ? 'bg-emerald-500/80' : 'bg-red-400'}`}
+                      />
+                    ))}
+                    {(history[c.type]?.length ?? 0) === 0 && <span className="text-[11px]">no nightly syncs yet — the cron fills this strip daily</span>}
+                  </div>
                 )}
                 {isDesktopTally && (
                   <p className="text-[11px]">Running on the Tally machine? &ldquo;Desktop agent token&rdquo; gives you a one-line env setup instead of network access.</p>

@@ -43,6 +43,58 @@ export function qboBaseUrl(environment: QboConfig['environment']): string {
 
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 
+// --- OAuth redirect flow (mirrors the Zoho nonce-callback pattern) -----------
+
+export interface QboOAuthEnv {
+  clientId: string;
+  clientSecret: string;
+  environment: 'sandbox' | 'production';
+}
+
+export function qboOAuthEnv(): QboOAuthEnv | null {
+  const clientId = process.env.QBO_CLIENT_ID;
+  const clientSecret = process.env.QBO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  const environment = (process.env.QBO_ENV as QboConfig['environment']) === 'production' ? 'production' : 'sandbox';
+  return { clientId, clientSecret, environment };
+}
+
+/** Intuit consent screen; Intuit appends ?code=&realmId= to the redirect. */
+export function qboAuthorizeUrl(env: QboOAuthEnv, redirectUri: string, state: string): string {
+  const url = new URL('https://appcenter.intuit.com/connect/oauth2');
+  url.searchParams.set('client_id', env.clientId);
+  url.searchParams.set('scope', 'com.intuit.quickbooks.accounting');
+  url.searchParams.set('redirect_uri', redirectUri);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('state', state);
+  return url.toString();
+}
+
+export interface QboExchangeResult {
+  ok: boolean;
+  refreshToken?: string;
+  error?: string;
+}
+
+/** Exchange the authorization code (+ realm id) for a refresh token. */
+export async function qboExchangeCode(env: QboOAuthEnv, code: string, redirectUri: string): Promise<QboExchangeResult> {
+  try {
+    const res = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        authorization: `Basic ${Buffer.from(`${env.clientId}:${env.clientSecret}`).toString('base64')}`,
+      },
+      body: new URLSearchParams({ code, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { refresh_token?: string; error?: string; error_description?: string };
+    if (!res.ok || !data.refresh_token) return { ok: false, error: data.error_description ?? data.error ?? `HTTP ${res.status}` };
+    return { ok: true, refreshToken: data.refresh_token };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 async function accessToken(cfg: QboConfig): Promise<string> {

@@ -80,6 +80,14 @@ export async function checkPolicyAndQueue(
 ): Promise<PolicyCheckResult> {
   const decision = await getPolicyDecision(input.orgId, input.actionType);
 
+  // shadow mode (PRD v2 pilot default): auto becomes ask — the agent drafts
+  // everything but executes nothing until the owner flips the switch
+  const { isShadowMode } = await import('./orgSettings.js');
+  if (decision === 'auto' && (await isShadowMode(input.orgId))) {
+    const approvalId = await requestApproval(input);
+    return { decision: 'ask', approvalId, reason: 'Shadow mode: drafted for your approval — nothing executes while shadow mode is on.' };
+  }
+
   if (decision === 'deny') {
     await audit(input.orgId, 'policy', 'action.denied', {
       entityType: input.entityType, entityId: input.entityId, metadata: { actionType: input.actionType },

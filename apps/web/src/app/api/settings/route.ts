@@ -1,5 +1,5 @@
 import { query, audit } from '@factory/db';
-import { setPolicy, getPolicyDecision } from '@factory/core';
+import { setPolicy, getPolicyDecision, isShadowMode, setShadowMode } from '@factory/core';
 import { listFacts, addFact, setFactStatus, getNotifySettings, saveNotifySettings, dispatchQueuedNotifications, ROUTE_LABELS, platformHasAiKey } from '@factory/agents';
 import { whatsappEnvConfig } from '@factory/connectors';
 import { getSession } from '@/lib/session';
@@ -18,9 +18,11 @@ export async function GET() {
   const notify = await getNotifySettings(s.orgId);
   const wa = whatsappEnvConfig();
   const platform = platformHasAiKey();
+  const shadow = await isShadowMode(s.orgId);
   return Response.json({
     policies,
     facts,
+    shadow,
     notify: {
       owner_phone: notify.ownerPhone,
       auto_send: notify.autoSend,
@@ -40,7 +42,7 @@ export async function GET() {
 export async function POST(req: Request) {
   const s = await getSession();
   const body = (await req.json()) as {
-    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_model_route' | 'save_notify' | 'dispatch_now';
+    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_model_route' | 'save_notify' | 'dispatch_now' | 'set_shadow_mode';
     actionType?: string;
     decision?: 'auto' | 'ask' | 'deny';
     fact?: string;
@@ -48,6 +50,7 @@ export async function POST(req: Request) {
     modelRoute?: 'default' | 'budget';
     ownerPhone?: string | null;
     autoSend?: boolean;
+    enabled?: boolean;
   };
 
   if (body.action === 'save_notify') {
@@ -69,6 +72,13 @@ export async function POST(req: Request) {
   if (body.action === 'set_policy' && body.actionType && body.decision) {
     await setPolicy(s.orgId, body.actionType, body.decision);
     return Response.json({ ok: true });
+  }
+
+  if (body.action === 'set_shadow_mode') {
+    const enabled = Boolean(body.enabled);
+    await setShadowMode(s.orgId, enabled);
+    await audit(s.orgId, `user:${s.userName}`, 'settings.shadow_mode', { metadata: { enabled } });
+    return Response.json({ ok: true, enabled });
   }
 
   // subscriber chooses the model class only — the AI key stays platform-side

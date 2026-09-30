@@ -16,10 +16,13 @@ interface OverdueLine {
 
 interface EinvoiceState {
   einvoiced: boolean;
+  generated?: boolean;
   irn?: string;
   ackNo?: string;
   provider?: string;
   error?: string;
+  ewbNo?: string;
+  ewbValidUntil?: string;
 }
 
 export function CollectionsClient() {
@@ -29,6 +32,7 @@ export function CollectionsClient() {
   const [msg, setMsg] = useState<string | null>(null);
   const [einv, setEinv] = useState<Record<string, EinvoiceState>>({});
   const [einvBusy, setEinvBusy] = useState<string | null>(null);
+  const [ewbForm, setEwbForm] = useState<{ invoice: string; vehicle: string; fromPin: string; toPin: string } | null>(null);
 
   const load = useCallback(async () => {
     const d = await fetch('/api/metrics?key=overdue_total').then((r) => r.json());
@@ -57,6 +61,23 @@ export function CollectionsClient() {
       const d = (await res.json()) as EinvoiceState & { alreadyGenerated?: boolean };
       setEinv((prev) => ({ ...prev, [invoice]: d }));
       setMsg(d.einvoiced ? `IRN ${d.alreadyGenerated ? 'already' : ''} generated for ${invoice}` : d.error ?? 'generation failed');
+    } finally {
+      setEinvBusy(null);
+    }
+  };
+
+  const generateEwb = async () => {
+    if (!ewbForm) return;
+    setEinvBusy(ewbForm.invoice);
+    try {
+      const res = await fetch('/api/eway', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ invoice: ewbForm.invoice, vehicleNumber: ewbForm.vehicle, fromPincode: ewbForm.fromPin, toPincode: ewbForm.toPin }),
+      });
+      const d = (await res.json()) as EinvoiceState;
+      setEinv((prev) => ({ ...prev, [ewbForm.invoice]: { ...(prev[ewbForm.invoice] ?? { einvoiced: false }), ...d } }));
+      setMsg(d.generated ? `E-way bill ${d.ewbNo} generated for ${ewbForm.invoice}` : d.error ?? 'EWB generation failed');
+      setEwbForm(null);
     } finally {
       setEinvBusy(null);
     }
@@ -120,9 +141,23 @@ export function CollectionsClient() {
                       <td><Badge variant={l.overdueDays > 60 ? 'destructive' : l.overdueDays > 30 ? 'warning' : 'secondary'}>{l.overdueDays}d</Badge></td>
                       <td>
                         {st?.einvoiced ? (
-                          <span className="flex items-center gap-1 text-emerald-600" title={`IRN ${st.irn?.slice(0, 24)}… · ack ${st.ackNo ?? ''} · ${st.provider ?? ''}`}>
-                            <QrCodeIcon className="h-3.5 w-3.5" /> {st.irn?.slice(0, 10)}…
-                          </span>
+                          <div className="space-y-1">
+                            <span className="flex items-center gap-1 text-emerald-600" title={`IRN ${st.irn?.slice(0, 24)}… · ack ${st.ackNo ?? ''} · ${st.provider ?? ''}`}>
+                              <QrCodeIcon className="h-3.5 w-3.5" /> {st.irn?.slice(0, 10)}…
+                            </span>
+                            {st.ewbNo ? (
+                              <span className="block text-[11px] text-muted-foreground" title={`valid until ${st.ewbValidUntil ?? ''}`}>🚚 EWB {st.ewbNo}</span>
+                            ) : ewbForm?.invoice === inv ? (
+                              <div className="flex flex-wrap items-center gap-1">
+                                <input value={ewbForm.vehicle} onChange={(e) => setEwbForm({ ...ewbForm, vehicle: e.target.value })} placeholder="MH12AB1234" aria-label="Vehicle number" className="w-24 rounded border px-1.5 py-0.5 text-[11px]" />
+                                <input value={ewbForm.fromPin} onChange={(e) => setEwbForm({ ...ewbForm, fromPin: e.target.value })} placeholder="from pin" aria-label="From pincode" className="w-16 rounded border px-1.5 py-0.5 text-[11px]" />
+                                <input value={ewbForm.toPin} onChange={(e) => setEwbForm({ ...ewbForm, toPin: e.target.value })} placeholder="to pin" aria-label="To pincode" className="w-16 rounded border px-1.5 py-0.5 text-[11px]" />
+                                <Button size="sm" disabled={einvBusy === inv} onClick={generateEwb}>{einvBusy === inv ? '…' : 'EWB'}</Button>
+                              </div>
+                            ) : (
+                              <button className="text-[11px] text-primary underline" onClick={() => setEwbForm({ invoice: inv, vehicle: '', fromPin: '', toPin: '' })}>+ e-way bill</button>
+                            )}
+                          </div>
                         ) : (
                           <Button size="sm" variant="outline" disabled={einvBusy === inv} onClick={() => generate(inv)}>
                             {einvBusy === inv ? <Loader2Icon className="h-3 w-3 animate-spin" /> : <FileCheck2Icon className="h-3 w-3" />} Generate IRN

@@ -263,6 +263,18 @@ create table if not exists notifications (
 -- older deployments created notifications without result; patch in place
 alter table notifications add column if not exists result jsonb;
 
+-- per-run connector sync history (freshness strip on the Connectors page)
+create table if not exists connector_syncs (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  connector_id uuid,
+  connector_type text not null,
+  ok boolean not null,
+  pulled integer not null default 0,
+  error text,
+  ran_at timestamptz not null default now()
+);
+
 -- F4 trust layer: every agent action as a human-readable activity entry.
 -- This is a product surface — summary/sources/reason are written for the
 -- owner, not for ops. undo window enforced in code (default 24h).

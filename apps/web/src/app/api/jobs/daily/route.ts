@@ -10,6 +10,8 @@ import {
 import { connectorHealth } from '@factory/core';
 import { query, audit } from '@factory/db';
 import { parseZohoConfig, ZohoBooksConnector, parseQboConfig, QuickBooksConnector, parseTallyServerConfig, tallySync } from '@factory/connectors';
+import { recordSyncHistory } from '@factory/core';
+import { generateEInvoice } from '@factory/agents';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -102,6 +104,14 @@ export async function POST(req: Request) {
   await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.nightly_sync', {
     metadata: { synced: syncReport.synced.length, failures: syncReport.failures.length },
   });
+
+  // auto e-invoicing: dispatched B2B invoices get IRNs without anyone asking
+  let einvoicing: Awaited<ReturnType<typeof runAutoEInvoicing>> | null = null;
+  try {
+    einvoicing = await runAutoEInvoicing();
+  } catch (e) {
+    console.error('auto e-invoicing failed:', e);
+  }
   await audit(orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', 'system', 'jobs.daily_digest', { metadata: { orgs: results.length } });
 
   // deliver outbound WhatsApp (digests, reminders, alerts) for orgs with
@@ -117,6 +127,7 @@ export async function POST(req: Request) {
   return Response.json({
     ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length,
     nightlySync: { synced: syncReport.synced.length, failures: syncReport.failures.length },
+    einvoicing: einvoicing ? { generated: einvoicing.generated.length, skipped: einvoicing.skipped, failed: einvoicing.failures.length } : null,
   });
 }
 
@@ -141,24 +152,33 @@ async function runNightlyConnectorSync(): Promise<{
         if (!cfg) continue;
         const conn = new ZohoBooksConnector();
         let pulled = 0;
+        let syncError: string | undefined;
         for (const entity of ['parties', 'items', 'invoices'] as const) {
-          pulled += (await conn.sync(c.org_id, c.id, entity)).pulled;
+          const r = await conn.sync(c.org_id, c.id, entity);
+          pulled += r.pulled;
+          syncError = syncError ?? r.errors[0];
         }
+        await recordSyncHistory(c.org_id, 'zoho_books', pulled > 0 || !syncError, pulled, syncError, c.id);
         synced.push({ orgId: c.org_id, connector: 'Zoho Books', pulled });
       } else if (c.type === 'quickbooks') {
         const cfg = parseQboConfig(c.config);
         if (!cfg) continue;
         const conn = new QuickBooksConnector();
         let pulled = 0;
+        let syncError: string | undefined;
         for (const entity of ['parties', 'items', 'invoices'] as const) {
-          pulled += (await conn.sync(c.org_id, c.id, entity)).pulled;
+          const r = await conn.sync(c.org_id, c.id, entity);
+          pulled += r.pulled;
+          syncError = syncError ?? r.errors[0];
         }
+        await recordSyncHistory(c.org_id, 'quickbooks', pulled > 0 || !syncError, pulled, syncError, c.id);
         synced.push({ orgId: c.org_id, connector: 'QuickBooks', pulled });
       } else if (c.type === 'tally') {
         const cfg = parseTallyServerConfig(c.config);
         if (!cfg) continue; // desktop-agent tallies heartbeat on their own
         const r = await tallySync(c.org_id, c.id, cfg);
         const total = r.parties + r.items + r.vouchers;
+        await recordSyncHistory(c.org_id, 'tally', total > 0 || r.errors.length === 0, total, r.errors[0], c.id);
         if (total === 0 && r.errors.length) {
           failures.push({ orgId: c.org_id, orgName: orgName.get(c.org_id) ?? 'workspace', connector: 'Tally', detail: r.errors[0] ?? 'no records pulled' });
         } else {
@@ -166,15 +186,66 @@ async function runNightlyConnectorSync(): Promise<{
         }
       }
     } catch (e) {
+      const detail = e instanceof Error ? e.message.slice(0, 200) : 'sync threw';
+      await recordSyncHistory(c.org_id, c.type, false, 0, detail, c.id);
       failures.push({
         orgId: c.org_id,
         orgName: orgName.get(c.org_id) ?? 'workspace',
         connector: c.type,
-        detail: e instanceof Error ? e.message.slice(0, 200) : 'sync threw',
+        detail,
       });
     }
   }
   return { synced, failures };
+}
+
+/**
+ * Auto e-invoicing: generate IRNs for dispatched B2B invoices that don't have
+ * one. Failures collect into a single digest notification — never per-invoice
+ * error spam. Skips invoices whose buyer has no valid GSTIN (not eligible).
+ */
+async function runAutoEInvoicing(): Promise<{ generated: string[]; skipped: number; failures: Array<{ invoice: string; reason: string }> }> {
+  const generated: string[] = [];
+  const skipped = { count: 0 };
+  const failures: Array<{ invoice: string; reason: string }> = [];
+
+  const gstinRe = '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$';
+  const orgs = await query<{ id: string; name: string; gstin: string | null }>(
+    `select id, name, settings->>'gstin' as gstin from organizations`
+  );
+  for (const org of orgs) {
+    if (!org.gstin) continue; // e-invoicing not enabled for this org
+    const invoices = await query<{ code: string | null }>(
+      `select e.code from entities e
+       join entities p on p.id = e.party_id
+       where e.org_id = $1 and e.type = 'invoice'
+         and e.status in ('dispatched', 'sent')
+         and e.data->>'irn' is null
+         and coalesce(p.data->>'gstin','') ~ $2
+       order by e.date desc limit 25`,
+      [org.id, gstinRe]
+    );
+    for (const inv of invoices) {
+      if (!inv.code) continue;
+      try {
+        const res = await generateEInvoice(org.id, inv.code, 'system:cron');
+        if (res.ok) generated.push(res.invoice ?? inv.code);
+        else if (res.error?.includes('not set') || res.error?.includes('GSTIN')) skipped.count++;
+        else failures.push({ invoice: res.invoice ?? inv.code, reason: (res.error ?? 'unknown').slice(0, 160) });
+      } catch (e) {
+        failures.push({ invoice: inv.code, reason: e instanceof Error ? e.message.slice(0, 160) : 'generation threw' });
+      }
+    }
+  }
+
+  if (failures.length) {
+    const lines = failures.slice(0, 5).map((f) => `• ${f.invoice}: ${f.reason}`).join('\n');
+    await query(
+      `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp',$2,'einvoice_digest',$3,'queued')`,
+      [orgs[0]?.id ?? '00000000-0000-0000-0000-000000000000', orgs[0]?.name ?? 'owner', `🧾 *E-invoice nightly run:* ${generated.length} generated, ${failures.length} failed.\n${lines}${failures.length > 5 ? `\n…and ${failures.length - 5} more.` : ''}`]
+    );
+  }
+  return { generated, skipped: skipped.count, failures };
 }
 
 /** Run connector health monitoring for every org; record failures in audit. */

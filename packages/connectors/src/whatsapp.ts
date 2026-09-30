@@ -104,6 +104,44 @@ export async function fetchWhatsappMedia(mediaId: string, token: string, graphVe
 }
 
 /**
+ * Send an audio voice note (Sarvam TTS output): upload the bytes to the
+ * Cloud API media endpoint, then send an audio message referencing it.
+ */
+export async function sendWhatsAppAudio(
+  cfg: { token: string; phoneNumberId: string; graphVersion?: string },
+  to: string,
+  audio: { base64: string; mimeType?: string }
+): Promise<WhatsAppSendResult> {
+  const version = cfg.graphVersion ?? 'v21.0';
+  try {
+    const form = new FormData();
+    const bytes = Buffer.from(audio.base64, 'base64');
+    form.append('file', new Blob([new Uint8Array(bytes)], { type: audio.mimeType ?? 'audio/mpeg' }), 'reply.mp3');
+    form.append('type', audio.mimeType ?? 'audio/mpeg');
+    form.append('messaging_product', 'whatsapp');
+    const up = await fetch(`https://graph.facebook.com/${version}/${cfg.phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${cfg.token}` },
+      body: form,
+    });
+    const upData = (await up.json().catch(() => ({}))) as { id?: string; error?: { message?: string } };
+    if (!up.ok || !upData.id) return { ok: false, error: upData.error?.message ?? `media upload HTTP ${up.status}` };
+
+    let res: Response;
+    res = await fetch(`https://graph.facebook.com/${version}/${cfg.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${cfg.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'audio', audio: { id: upData.id } }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { messages?: Array<{ id: string }>; error?: { message?: string } };
+    if (!res.ok) return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` };
+    return { ok: true, messageId: data.messages?.[0]?.id };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
  * Live credential test: GET /{phoneNumberId} on the Graph API. A valid token
  * + phone number id returns the display name; anything else returns the
  * provider's error so setup problems surface at setup time.
