@@ -19,8 +19,12 @@ import {
   extractWeighbridgeFromImage,
   processWeighbridgeTicket,
   looksLikeWeighbridgeText,
+  processShiftNote,
+  detectPromiseToPay,
+  handleCustomerMessage,
+  executeAction,
 } from '@factory/agents';
-import { executeAction } from '@factory/agents';
+import { query as dbQuery } from '@factory/db';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -176,6 +180,21 @@ export async function POST(req: Request) {
         continue;
       }
 
+      // A8 shift-report fast path: a voice note that reads like a shift log
+      // (output/rejects/downtime + optional job card) becomes a structured
+      // report instead of a general chat answer. Anything else falls through
+      // to the orchestrator as before.
+      const shiftish = /\b(output|produc|reject|kharab|downtime|job\s*card|jc[-\s]?\d)\b/i.test(transcript);
+      if (shiftish) {
+        const shift = await processShiftNote(target.orgId, transcript, { role: target.role, via: 'whatsapp-voice' });
+        const mode1 = await replyTo(msg.from, shift.reply);
+        await audit(target.orgId, 'agent', 'whatsapp.shift_note', {
+          metadata: { messageId: msg.messageId, transcript: transcript.slice(0, 300), decision: shift.decision ?? (shift.needsClarification ? 'clarify' : 'none'), replied: mode1, flags: shift.flags },
+        });
+        handled.push(`shift:${msg.messageId}:${shift.needsClarification ? 'clarify' : (shift.decision ?? 'done')}`);
+        continue;
+      }
+
       const { conversationId, text: reply } = await runOrchestratorToText({
         orgId: target.orgId,
         role: target.role,
@@ -270,6 +289,55 @@ export async function POST(req: Request) {
           await replyTo(msg.from, result.reply);
           handled.push(`weighbridge:${msg.messageId}:${result.ok ? 'ok' : 'parse-error'}`);
           continue;
+        }
+      }
+
+      // A12: inbound from a known CUSTOMER number (not the owner) — order
+      // status / complaint intake with human-handoff on escalation
+      {
+        const partyRow = (
+          await dbQuery<{ org_id: string; id: string; name: string | null }>(
+            `select org_id, id, coalesce(name, data->>'name') as name from parties where phone = $1 limit 1`,
+            [msg.from]
+          )
+        )[0];
+        const ownerHere = await dbQuery<{ org_id: string }>(`select org_id from notify_settings where owner_phone = $1 limit 1`, [msg.from]);
+        if (partyRow && !ownerHere[0]) {
+          const cs = await handleCustomerMessage(partyRow.org_id, {
+            customerId: partyRow.id,
+            customerName: partyRow.name ?? 'Customer',
+            text: msg.text,
+          });
+          await replyTo(msg.from, cs.reply);
+          handled.push(`customer:${msg.messageId}:${cs.intent}${cs.escalated ? ':escalated' : ''}`);
+          continue;
+        }
+      }
+
+      // A4: a customer reply mentioning a payment date becomes a SUGGESTED
+      // promise-to-pay for the owner to confirm (never auto-applied)
+      if (cmd.cmd === 'other' && detectPromiseToPay(msg.text)) {
+        const ptp = detectPromiseToPay(msg.text)!;
+        const target = await resolveInboundOrg(msg.from);
+        if (target) {
+          const latest = (
+            await dbQuery<{ id: string; code: string | null }>(
+              `select e.id, e.code from entities e join entities p on p.id = e.party_id
+               where e.org_id = $1 and e.type = 'invoice' and p.data->>'phone' = $2
+                 and e.status in ('sent','overdue','partial') order by e.date desc limit 1`,
+              [target.orgId, msg.from]
+            )
+          )[0];
+          if (latest) {
+            await dbQuery(
+              `insert into entities (id, org_id, type, status, party_id, source, data)
+               values (gen_random_uuid()::text, $1, 'promise_to_pay', 'suggested', (select party_id from entities where id = $2), 'agent', $3::jsonb)`,
+              [target.orgId, latest.id, JSON.stringify({ invoiceId: latest.id, invoice: latest.code, promiseDate: ptp.date, via: 'whatsapp-reply', confidence: ptp.confidence, text: msg.text.slice(0, 200) })]
+            );
+            await replyTo(msg.from, `Noted — I've queued "payment by ${ptp.date}" for confirmation. Thank you!`);
+            handled.push(`promise:${msg.messageId}:${ptp.confidence}`);
+            continue;
+          }
         }
       }
 

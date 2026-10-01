@@ -66,6 +66,31 @@ export interface RemediationCase {
   name: string;
 }
 
+export interface QuoteComparisonCase {
+  kind: 'quote_comparison';
+  name: string;
+}
+
+export interface CollectionsCase {
+  kind: 'collections_flow';
+  name: string;
+}
+
+export interface ShiftReportCase {
+  kind: 'shift_report';
+  name: string;
+}
+
+export interface ComplianceThresholdCase {
+  kind: 'compliance_threshold';
+  name: string;
+}
+
+export interface MaintenanceCase {
+  kind: 'maintenance_schedule';
+  name: string;
+}
+
 export type EvalCase =
   | ExtractionCase
   | MetricCase
@@ -75,7 +100,12 @@ export type EvalCase =
   | EwbCase
   | OverrideRateCase
   | WeighbridgeCase
-  | RemediationCase;
+  | RemediationCase
+  | QuoteComparisonCase
+  | CollectionsCase
+  | ShiftReportCase
+  | ComplianceThresholdCase
+  | MaintenanceCase;
 
 export const GOLDEN_CASES: EvalCase[] = [
   // --- extraction -----------------------------------------------------------
@@ -164,5 +194,30 @@ Total: 12000`,
   {
     kind: 'remediation_pipeline',
     name: 'anomaly-to-draft-to-executed',
+  },
+  // --- agent workflows: A5 quote comparison ----------------------------------
+  {
+    kind: 'quote_comparison',
+    name: 'quote-parse-rank-recommend-persist',
+  },
+  // --- agent workflows: A4 collections discipline ----------------------------
+  {
+    kind: 'collections_flow',
+    name: 'cooldown-promise-batch-approve',
+  },
+  // --- agent workflows: A8 shift report ---------------------------------------
+  {
+    kind: 'shift_report',
+    name: 'voice-transcript-to-jobcard-write',
+  },
+  // --- agent workflows: A10 compliance threshold ------------------------------
+  {
+    kind: 'compliance_threshold',
+    name: 'applicability-rule-and-human-queue',
+  },
+  // --- agent workflows: A13 maintenance PM ------------------------------------
+  {
+    kind: 'maintenance_schedule',
+    name: 'calendar-pm-due-to-work-order',
   },
 ];

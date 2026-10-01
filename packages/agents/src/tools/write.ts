@@ -60,6 +60,29 @@ function previewFor(action: string, payload: Record<string, unknown>): string {
       const p = payload as { voucherType?: string; voucherNo?: string };
       return `Push ${p.voucherType ?? 'voucher'} ${p.voucherNo ?? ''} to Tally`;
     }
+    case 'send_reminder_batch': {
+      const p = payload as { messages?: Array<{ invoice?: string | null; customer?: string; amount?: number; text?: string }> };
+      const msgs = p.messages ?? [];
+      return msgs.length
+        ? `${msgs.length} reminder${msgs.length > 1 ? 's' : ''} ready to send — first: ${msgs[0]!.customer ?? '?'} (${msgs[0]!.invoice ?? '?'})`
+        : 'Empty reminder batch';
+    }
+    case 'create_ncr': {
+      const p = payload as { defectType?: string; severity?: string; affectedQty?: number; description?: string };
+      return `Open NCR — ${p.defectType ?? 'defect'} (${p.severity ?? 'medium'}) ×${p.affectedQty ?? 1}: ${p.description ?? ''}`.slice(0, 160);
+    }
+    case 'create_maintenance_wo': {
+      const p = payload as { machine?: string; task?: string; dueOn?: string };
+      return `Maintenance work order: ${p.task ?? 'PM'} on ${p.machine ?? 'machine'}${p.dueOn ? ` due ${p.dueOn}` : ''}`;
+    }
+    case 'update_reorder_points': {
+      const p = payload as { updates?: Array<{ reorderPoint?: number }> };
+      return `Adjust reorder points on ${p.updates?.length ?? 0} item${(p.updates?.length ?? 0) > 1 ? 's' : ''} from the demand forecast`;
+    }
+    case 'whatsapp_send': {
+      const p = payload as { message?: string };
+      return `Send owner notification: ${p.message?.slice(0, 80) ?? 'message'}`;
+    }
     default:
       return `${action}: ${JSON.stringify(payload).slice(0, 140)}`;
   }
@@ -119,6 +142,9 @@ function activityFor(actionType: string, payload: Record<string, unknown>): { su
       return { summary: `${actionType.replace(/_/g, ' ')}`, sources: [] };
   }
 }
+
+/** Shape of one message inside a send_reminder_batch payload. */
+type ParameterizedBatchMessage = { invoice: string | null; customer: string; amount: number; text: string };
 
 /**
  * Execute an approved action (also used by the approvals API) — and record
@@ -277,10 +303,43 @@ async function executeActionInner(
       });
       return { ok: true, result: { purchaseEntryId: e.id, code: e.code } };
     }
+    case 'send_reminder_batch': {
+      // Agent 4 batched approvals: one decision → N individual reminder sends,
+      // each logged (spec: "12 reminders ready to send", per-message status)
+      const p = payload as { messages: Array<{ invoice?: string | null; customer?: string; amount?: number; text?: string; invoiceId?: string; customerId?: string | null }> };
+      const messages = p.messages ?? [];
+      if (!messages.length) return { ok: false, error: 'batch has no messages' };
+      const { executeSendReminderBatch } = await import('../collections.js');
+      return executeSendReminderBatch(orgId, { messages: messages as ParameterizedBatchMessage[] });
+    }
     case 'buyer_followup': {
       // F9 export pack: approved buyer follow-up message (queued for dispatch)
       const { sendBuyerFollowUp } = await import('../exports.js');
       return sendBuyerFollowUp(orgId, payload);
+    }
+    case 'create_ncr': {
+      // Agent 9 quality: NCR finalised after approval
+      const { executeCreateNcr } = await import('../quality.js');
+      return executeCreateNcr(orgId, payload);
+    }
+    case 'update_reorder_points': {
+      // Agent 11 forecasting: batched min/max update after approval
+      const { executeUpdateReorderPoints } = await import('../forecast.js');
+      return executeUpdateReorderPoints(orgId, payload as { updates: Array<{ itemId: string; reorderPoint: number; reorderQty?: number }> });
+    }
+    case 'whatsapp_send': {
+      // Agent 12 routing notifications (complaint routing) — queued for dispatch
+      const p = payload as { message?: string; template?: string };
+      await query(
+        `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp','owner',$2,$3,'queued')`,
+        [orgId, p.template ?? 'whatsapp_send', p.message ?? '']
+      );
+      return { ok: true, result: { queued: true } };
+    }
+    case 'create_maintenance_wo': {
+      // Agent 13 maintenance: PM work order after approval
+      const { executeCreateMaintenanceWo } = await import('../maintenance.js');
+      return executeCreateMaintenanceWo(orgId, payload);
     }
     case 'grn_create': {
       const p = payload as { poId?: string; itemId?: string; qty?: number; warehouse?: string };
@@ -536,8 +595,223 @@ async function runLowStock(orgId: string) {
 export function writeToolDefs(ctx: AgentContext) {
   return {
     draft_reminders: draftRemindersTool(ctx),
+    draft_reminders_batch: draftRemindersBatchTool(ctx),
     draft_rfq: draftRfqTool(ctx),
     create_po_draft: createPoDraftTool(ctx),
+    compare_vendor_quotes: compareVendorQuotesTool(ctx),
     log_shift_output: logShiftOutputTool(ctx),
+    forecast_reorder_points: forecastReorderPointsTool(ctx),
+    log_inspection: logInspectionTool(ctx),
+    log_defect_ncr: logDefectNcrTool(ctx),
+    check_maintenance: checkMaintenanceTool(ctx),
+    draft_maintenance_wo: draftMaintenanceWoTool(ctx),
   };
 }
+
+// --- Agent 4 batch + Agent 5 quote comparison ---------------------------------
+
+/** Batched reminder drafts (spec A4: ONE approvals item, N previewable messages). */
+export const draftRemindersBatchTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Draft payment reminders for ALL eligible overdue invoices as a single batch approval (respects per-org reminder cooldown and open promise-to-pay dates). Prefer this over individual reminders when more than one invoice is overdue.',
+    inputSchema: jsonSchema<{ minDaysOverdue?: number }>({
+      type: 'object',
+      properties: {
+        minDaysOverdue: { type: 'integer', minimum: 0, description: 'Only invoices overdue at least this many days (default 1)' },
+      },
+      additionalProperties: false,
+    }),
+    execute: async ({ minDaysOverdue }) => {
+      const { batchDraftReminders } = await import('../collections.js');
+      const res = await batchDraftReminders(ctx.orgId, { minDaysOverdue });
+      return {
+        decision: res.decision,
+        approvalId: res.approvalId,
+        count: res.count,
+        totalAmount: res.totalAmount,
+        previewFirst: res.messages[0]?.text,
+        reason: res.reason,
+      };
+    },
+  });
+
+/** Unstructured vendor replies → a comparable table (spec A5 compareQuotes). */
+export const compareVendorQuotesTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Compare vendor quote replies for an RFQ: pass each vendor reply (verbatim text or already-structured numbers) and get a sorted comparison with the recommended pick — lowest quoted rate meeting the required-by date, preferred vendors first on ties.',
+    inputSchema: jsonSchema<{
+      rfqCode: string;
+      requiredBy?: string;
+      quotes: Array<{ vendorName: string; replyText?: string; rate?: number; leadTimeDays?: number; minQty?: number; note?: string }>;
+    }>({
+      type: 'object',
+      properties: {
+        rfqCode: { type: 'string', description: 'RFQ code these replies answer, e.g. RFQ-0012' },
+        requiredBy: { type: 'string', description: 'YYYY-MM-DD need-by date for lead-time filtering' },
+        quotes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              vendorName: { type: 'string' },
+              replyText: { type: 'string', description: 'Verbatim vendor reply — rate/lead time are parsed from it when the numeric fields are absent' },
+              rate: { type: 'number' },
+              leadTimeDays: { type: 'number' },
+              minQty: { type: 'number' },
+              note: { type: 'string' },
+            },
+            required: ['vendorName'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['rfqCode', 'quotes'],
+      additionalProperties: false,
+    }),
+    execute: async ({ rfqCode, requiredBy, quotes }) => {
+      const { compareVendorQuotes } = await import('../procurement.js');
+      const res = await compareVendorQuotes(ctx.orgId, rfqCode, quotes, requiredBy);
+      return res;
+    },
+  });
+
+// --- Agent 9 / 11 / 13 agent-facing surfaces -----------------------------------
+
+/** Agent 11: forecast + batched reorder-point update in one call. */
+export const forecastReorderPointsTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Run the demand-forecast cycle: per-item reorder-point suggestions from sales history (insufficient-history and seasonal items flagged, not guessed), queued as ONE approval that updates item min/max on approval.',
+    inputSchema: jsonSchema<{ horizonWeeks?: number }>({
+      type: 'object',
+      properties: {
+        horizonWeeks: { type: 'integer', minimum: 1, maximum: 12, description: 'Planning horizon (default 4)' },
+      },
+      additionalProperties: false,
+    }),
+    execute: async ({ horizonWeeks }) => {
+      const { runForecastCycle } = await import('../forecast.js');
+      const r = await runForecastCycle(ctx.orgId, horizonWeeks ?? 4);
+      return {
+        suggestions: r.suggestions.map((s) => ({ item: s.item, from: s.currentReorderPoint, to: s.suggestedReorderPoint, why: s.why })),
+        insufficientHistory: r.insufficientHistory,
+        seasonal: r.seasonal,
+        decision: r.decision,
+        approvalId: r.approvalId,
+      };
+    },
+  });
+
+/** Agent 9 checklist path: record an inspection (auto-escalates on failure). */
+export const logInspectionTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Record a completed inspection checklist for an item/job card. Any failed item marks the inspection for NCR follow-up.',
+    inputSchema: jsonSchema<{
+      itemRef?: string;
+      jobCardCode?: string;
+      checklistKey?: string;
+      results: Array<{ item: string; pass: boolean; note?: string }>;
+    }>({
+      type: 'object',
+      properties: {
+        itemRef: { type: 'string', description: 'Item name or code' },
+        jobCardCode: { type: 'string' },
+        checklistKey: { type: 'string', description: 'Which checklist, e.g. dispatch_qc' },
+        results: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              item: { type: 'string', description: 'Checklist line' },
+              pass: { type: 'boolean' },
+              note: { type: 'string' },
+            },
+            required: ['item', 'pass'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['results'],
+      additionalProperties: false,
+    }),
+    execute: async (p) => {
+      const { createInspectionRecord } = await import('../quality.js');
+      const r = await createInspectionRecord(ctx.orgId, p);
+      return { inspectionId: r.inspectionId, failed: r.failed, ncrRecommended: r.failed > 0 };
+    },
+  });
+
+/** Agent 9 photo path: structured defect → NCR/CAPA draft through policy. */
+export const logDefectNcrTool = (ctx: AgentContext) =>
+  tool({
+    description:
+      'Draft an NCR (non-conformance report) for a defect: type, severity, qty affected, description. Similar past defects are pulled in for root-cause suggestions; a CAPA draft rides along. Queued for approval — NCRs touch supplier/customer relationships.',
+    inputSchema: jsonSchema<{
+      defectType: string;
+      severity: 'low' | 'medium' | 'high' | 'critical';
+      affectedQty?: number;
+      description: string;
+      itemRef?: string;
+      jobCardCode?: string;
+    }>({
+      type: 'object',
+      properties: {
+        defectType: { type: 'string', description: 'scratch, dent, dimensional-off, porosity, colour, leak…' },
+        severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+        affectedQty: { type: 'integer', minimum: 1 },
+        description: { type: 'string' },
+        itemRef: { type: 'string' },
+        jobCardCode: { type: 'string' },
+      },
+      required: ['defectType', 'severity', 'description'],
+      additionalProperties: false,
+    }),
+    execute: async (p) => {
+      const { draftNcr } = await import('../quality.js');
+      const r = await draftNcr(
+        ctx.orgId,
+        { defectType: p.defectType, severity: p.severity, affectedQty: p.affectedQty ?? 1, description: p.description },
+        { itemRef: p.itemRef, jobCardCode: p.jobCardCode, source: 'manual' }
+      );
+      return { decision: r.decision, approvalId: r.approvalId, trendAlert: r.trendAlert, similar: r.similar, reason: r.reason };
+    },
+  });
+
+/** Agent 13 read: what PM work is due. */
+export const checkMaintenanceTool = (ctx: AgentContext) =>
+  tool({
+    description: 'Preventive-maintenance check: machines due within the warning window (calendar intervals), plus machines missing an interval.',
+    inputSchema: jsonSchema<{}>({
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    }),
+    execute: async () => {
+      const { checkDueMaintenance } = await import('../maintenance.js');
+      const r = await checkDueMaintenance(ctx.orgId);
+      return {
+        due: r.due.map((d) => ({ machine: d.machine, dueOn: d.dueOn, daysOverdue: d.daysOverdue, interval: d.pmIntervalDays })),
+        missingInterval: r.missingInterval,
+        machines: r.total,
+      };
+    },
+  });
+
+/** Agent 13 write: draft PM work orders for everything due. */
+export const draftMaintenanceWoTool = (ctx: AgentContext) =>
+  tool({
+    description: 'Draft preventive-maintenance work orders for all machines due (calendar basis, recorded explicitly); each queues through approvals.',
+    inputSchema: jsonSchema<{}>({
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    }),
+    execute: async () => {
+      const { draftMaintenanceWorkOrders } = await import('../maintenance.js');
+      const r = await draftMaintenanceWorkOrders(ctx.orgId);
+      return { drafts: r.drafts, missingInterval: r.missingInterval };
+    },
+  });

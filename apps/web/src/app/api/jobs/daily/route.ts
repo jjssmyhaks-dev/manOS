@@ -7,6 +7,10 @@ import {
   runDueAgentJobs,
   generateAllPilotDigests,
   pilotDigestText,
+  batchDraftReminders,
+  runComplianceCheck,
+  draftMaintenanceWorkOrders,
+  runForecastCycle,
   type AgentJobRunResult,
 } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
@@ -48,7 +52,7 @@ export async function POST(req: Request) {
   if (denied) return denied;
 
   const orgs = await query<{ id: string; name: string }>('select id, name from organizations');
-  const results: Array<{ org: string; overdue: number; anomalies: number; remediation: string }> = [];
+  const results: Array<{ org: string; overdue: number; anomalies: number; remediation: string; collections: string; compliance: string; maintenance: string; forecast: string }> = [];
   const jobResults: AgentJobRunResult[] = [];
   for (const org of orgs) {
     const digest = await generateDigest(org.id);
@@ -83,7 +87,46 @@ export async function POST(req: Request) {
     } catch {
       // remediation must never break the cron
     }
-    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0, anomalies: anomalyCount, remediation: remediationNote });
+
+    // A4 collections: cooldown/promise-aware batched reminder drafts
+    let collectionsNote = 'none';
+    try {
+      const c = await batchDraftReminders(org.id);
+      collectionsNote = c.count === 0 ? 'none due' : `${c.count} drafted (${c.decision})`;
+    } catch {
+      // collections must never break the cron
+    }
+
+    // A10 compliance: e-invoice applicability → IRN with human queue on GSP errors
+    let complianceNote = 'off';
+    try {
+      const comp = await runComplianceCheck(org.id);
+      complianceNote = comp.checked === 0 ? 'nothing eligible' : `${comp.generated.length} IRNs · ${comp.queuedForHuman.length} queued`;
+    } catch {
+      // compliance must never break the cron
+    }
+
+    // A13 maintenance: PM work-order drafts for machines due
+    let maintenanceNote = 'none';
+    try {
+      const m = await draftMaintenanceWorkOrders(org.id);
+      maintenanceNote = m.drafts.length === 0 ? 'none due' : `${m.drafts.length} WO drafted`;
+    } catch {
+      // maintenance must never break the cron
+    }
+
+    // A11 forecasting (Mondays): reorder-point adjustment drafts
+    let forecastNote = 'skipped';
+    try {
+      if (new Date().getUTCDay() === 1) {
+        const f = await runForecastCycle(org.id);
+        forecastNote = f.suggestions.length === 0 ? 'no changes' : `${f.suggestions.length} ROP suggestions (${f.decision ?? 'none'})`;
+      }
+    } catch {
+      // forecasting must never break the cron
+    }
+
+    results.push({ org: org.name, overdue: digest.sections.find((x) => x.key === 'overdue')?.lines.length ?? 0, anomalies: anomalyCount, remediation: remediationNote, collections: collectionsNote, compliance: complianceNote, maintenance: maintenanceNote, forecast: forecastNote });
   }
 
   // the agent's own schedule: NL recurring tasks due today, executed with tools

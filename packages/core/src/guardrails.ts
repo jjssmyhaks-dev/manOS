@@ -12,9 +12,10 @@ export const ROLE_TOOL_ALLOWLIST: Record<string, string[] | '*'> = {
   admin: '*',
   manager: '*',
   purchase: ['query_data', 'list_overdue', 'get_item_stock', 'reorder_check', 'draft_rfq', 'compare_vendor_quotes'],
-  accounts: ['query_data', 'list_overdue', 'sales_summary', 'explain_metric'],
+  accounts: ['query_data', 'list_overdue', 'sales_summary', 'explain_metric', 'draft_reminders_batch'],
   sales: ['query_data', 'get_item_stock', 'sales_summary', 'draft_quote'],
   operator: ['log_shift_output', 'get_item_stock'],
+  qc: ['log_inspection', 'log_defect_ncr', 'get_item_stock', 'query_data'],
 };
 
 export function toolAllowedForRole(role: string, toolName: string): boolean {

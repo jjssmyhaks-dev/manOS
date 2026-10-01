@@ -59,6 +59,28 @@ packages/
   evals/                Golden-case eval suite (extraction, metrics, guardrails)
 ```
 
+## Agent workflows (the 13-agent spec)
+
+Every agent follows the shared pattern — deterministic tools first, LLM only to interpret, every write through the policy engine (`auto`/`ask`/`deny`), every action on the activity timeline, shadow mode ON by default.
+
+| # | Agent | Module / surface | Status |
+| --- | --- | --- | --- |
+| 1 | Orchestrator / Data Chat | `packages/agents/src/orchestrator.ts` + read tools (`query_data`, `ask_data`, `searchSimilar` citations) | ✅ built |
+| 2 | Document Intake | `extraction.ts` + `dedupe.ts` (file-hash + field-signature dedupe), review queue → SO | ✅ built |
+| 3 | Activity / Trust Layer | `activity.ts`, `/activity`, `/api/activity/export` (CSV/PDF), undo + feedback | ✅ built |
+| 4 | Collections | `collections.ts` — cooldown + promise-to-pay honoured, ONE batch approval (`draft_reminders_batch`), `recordPromiseToPay`, date detection from replies | ✅ built |
+| 5 | Procurement | `draft_rfq`/`create_po_draft` + `procurement.ts` (`compare_vendor_quotes`: parse → rank → recommend → persist `vendor_quote`) | ✅ built |
+| 6 | Weighbridge / Scrap | `weighbridge.ts`, WhatsApp photo/text intake → shadow draft → approval → ledger | ✅ built |
+| 7 | Export Buyer Follow-up | `exports.ts` — LUT/IEC + packing-list watch, drafted buyer messages | ✅ built |
+| 8 | Production / Shift | `shift.ts` — voice note → deterministic extraction → clarification if missing → job-card write via policy | ✅ built |
+| 9 | Quality | `quality.ts` + `log_inspection`/`log_defect_ncr` — NCR/CAPA drafts with similar-defect retrieval and 30-day trend escalation | ✅ built |
+| 10 | Compliance | `einvoice.ts`/`eway.ts` + `compliance.ts` — threshold rule in config, GSP errors → human queue after 3 attempts | ✅ built |
+| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval | ✅ built |
+| 12 | Customer Service | `customer-service.ts` — order status, complaint tickets, angry-tone human handoff (webhook resolves customer numbers) | ✅ built |
+| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed | ✅ built |
+
+Scheduled agents (4, 10, 11, 13 + digests/remediation) run inside the nightly cron (`/api/jobs/daily`); the weekly pilot digest (Mondays) reports their outcomes per org. A5/A9/A11/A13 are also conversational tools the orchestrator can call.
+
 ## AI stack
 
 - **Vercel AI SDK v5** (`ai@^5`): `streamText` tool-calling loop with `stepCountIs` guard,
@@ -106,7 +128,7 @@ packages/
 ```bash
 npm install
 npm run dev          # apps/web on http://localhost:3100
-npm test             # eval suite (13 golden cases) via tsx
+npm test             # eval suite (18 golden cases) via tsx
 npm run build        # production build of apps/web
 ```
 
@@ -152,6 +174,11 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 - **override_rate** ×1 — week bucketing + override % arithmetic, trend classification (the PRD exit metric)
 - **weighbridge_flow** ×1 — text parse → shadow draft → owner approval → purchase entry + inward scrap ledger
 - **remediation_pipeline** ×1 — duplicate-invoice anomaly → credit-note draft (right fix) → approval → executed + audited
+- **quote_comparison** ×1 — reply parsing, ranking with need-by filtering, recommendation, `vendor_quote` persistence
+- **collections_flow** ×1 — reminder cooldown, promise-to-pay precedence, batched approval, date detection
+- **shift_report** ×1 — transcript extraction, clarification on missing fields, policy-gated job-card write
+- **compliance_threshold** ×1 — applicability rule (B2B + threshold in config) boundary behaviour
+- **maintenance_schedule** ×1 — calendar PM due-window maths, missing intervals listed, WO drafted via policy
 
 ## PRD v2 wedge (trust-and-voice strategy)
 

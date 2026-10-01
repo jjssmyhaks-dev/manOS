@@ -23,13 +23,21 @@ export const TOOL_RISK: Record<string, 'read' | 'write' | 'external'> = {
   run_mrp: 'read',
   explain_metric: 'read',
   draft_reminders: 'write',
+  draft_reminders_batch: 'write',
   draft_rfq: 'write',
   create_po_draft: 'write',
+  compare_vendor_quotes: 'read',
   log_shift_output: 'write',
   expiry_report: 'read',
   yield_report: 'read',
   fx_exposure: 'read',
   export_docs_status: 'read',
+  // agent-facing surfaces for the new agents (A8–A13)
+  forecast_reorder_points: 'write',
+  log_inspection: 'write',
+  log_defect_ncr: 'write',
+  check_maintenance: 'read',
+  draft_maintenance_wo: 'write',
 };
 
 // --- query_data: named metric execution -------------------------------------

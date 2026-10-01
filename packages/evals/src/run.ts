@@ -9,6 +9,11 @@ import {
   type OverrideRateCase,
   type WeighbridgeCase,
   type RemediationCase,
+  type QuoteComparisonCase,
+  type CollectionsCase,
+  type ShiftReportCase,
+  type ComplianceThresholdCase,
+  type MaintenanceCase,
 } from './cases.js';
 
 /**
@@ -480,6 +485,243 @@ async function runRemediation(c: RemediationCase): Promise<Result> {
   };
 }
 
+// --- agent workflows: A5 quote comparison --------------------------------------
+
+async function runQuoteComparison(c: QuoteComparisonCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { compareVendorQuotes, parseQuoteReply } = await import('@factory/agents');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+
+  // 1. regex extraction from a verbatim vendor reply
+  const parsed = parseQuoteReply('Rate ₹234/kg, delivery in 6 days after PO. Minimum 500kg please.');
+  if (parsed.rate !== 234) issues.push(`parsed rate ${parsed.rate} != 234`);
+  if (parsed.leadTimeDays !== 6) issues.push(`parsed lead ${parsed.leadTimeDays} != 6`);
+
+  // 2. comparison: A cheapest and meets date; B meets but dearer; C misses the date
+  const needBy = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
+  const vendor = (
+    await query<{ id: string; name: string | null }>(
+      `select id, coalesce(name, data->>'name') as name from entities
+       where org_id=$1 and type='party' and data->>'kind'='vendor' order by name limit 1`,
+      [orgId]
+    )
+  )[0];
+  if (!vendor) throw new Error('no vendor in seed');
+  // the RFQ must exist for quotes to attach to
+  await query(
+    `insert into entities (id, org_id, type, code, status, source, data)
+     values (gen_random_uuid()::text, $1, 'rfq', 'EVAL-RFQ-1', 'sent', 'seed', '{}'::jsonb)`,
+    [orgId]
+  );
+  const cmp = await compareVendorQuotes(
+    orgId,
+    'EVAL-RFQ-1',
+    [
+      { vendorName: vendor.name ?? 'V1', replyText: '₹234/kg, delivery in 6 days' },
+      { vendorName: vendor.name ?? 'V1', rate: 260, leadTimeDays: 5 },
+      { vendorName: vendor.name ?? 'V1', rate: 200, leadTimeDays: 30 },
+    ],
+    needBy
+  );
+  if (!cmp.recommended || cmp.recommended.rate !== 234) {
+    issues.push(`recommendation ${JSON.stringify(cmp.recommended)} != rate 234 pick`);
+  }
+  if (cmp.quotes[2]?.meetsRequirement !== false) issues.push('late quote wrongly marked as meeting requirement');
+  if (!cmp.recommended?.why.includes('under the next best')) issues.push(`expected next-best delta in the why: ${cmp.recommended?.why}`);
+
+  // 3. persisted against the party for the purchase head's thread
+  const stored = await query<{ c: string }>(
+    `select count(*) as c from entities where org_id=$1 and type='vendor_quote' and data->>'rfqCode'='EVAL-RFQ-1'`,
+    [orgId]
+  );
+  if (Number(stored[0]?.c ?? 0) < 3) issues.push(`vendor_quote rows ${stored[0]?.c} != 3`);
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `pick ${cmp.recommended?.vendorName} @ ₹${cmp.recommended?.rate} · ${stored[0]?.c} quotes stored`,
+  };
+}
+
+// --- agent workflows: A4 collections discipline ----------------------------------
+
+async function runCollections(c: CollectionsCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { getReminderCandidates, batchDraftReminders, detectPromiseToPay, recordPromiseToPay } = await import('@factory/agents');
+  const { setShadowMode } = await import('@factory/core');
+  await initDb();
+  const { orgId } = await seedDemoData('sunfresh-foods');
+  const issues: string[] = [];
+  await setShadowMode(orgId, true);
+
+  // pick an overdue invoice from the seed
+  const inv = (
+    await query<{ id: string; code: string | null }>(
+      `select id, code from entities where org_id=$1 and type='invoice' and status in ('sent','overdue','partial')
+         and (data->>'dueDate')::date < current_date limit 1`,
+      [orgId]
+    )
+  )[0];
+  if (!inv) throw new Error('no overdue invoice in seed');
+
+  // 1. eligible the first time
+  const first = await getReminderCandidates(orgId);
+  if (!first.eligible.some((e) => e.invoiceId === inv.id)) issues.push('overdue invoice not eligible on first pass');
+
+  // 2. cooldown: pretend a reminder was sent yesterday
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  await query(`update entities set data = data || jsonb_build_object('lastReminderAt', $2::text) where id=$1`, [inv.id, yesterday]);
+  const second = await getReminderCandidates(orgId);
+  if (!second.skipped.some((e) => e.invoiceId === inv.id && e.skippedReason === 'cooldown')) {
+    issues.push('cooldown not honoured after a reminder yesterday');
+  }
+
+  // 3. promise-to-pay beats the cooldown once recorded
+  const ptpDate = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  const rec = await recordPromiseToPay(orgId, { invoiceId: inv.id, promiseDate: ptpDate, note: 'eval', via: 'eval' });
+  if (!rec.ok) issues.push(`promise not recorded: ${rec.error}`);
+  const third = await getReminderCandidates(orgId);
+  const entry = third.skipped.find((e) => e.invoiceId === inv.id);
+  if (!entry || entry.skippedReason !== 'promise') issues.push(`promise not honoured: ${entry?.skippedReason ?? 'still eligible'}`);
+
+  // 4. batch draft routes through the policy engine (shadow → ask)
+  const batch = await batchDraftReminders(orgId);
+  if (batch.decision !== 'ask') issues.push(`batch decision ${batch.decision} != ask in shadow mode`);
+  if (!batch.approvalId) issues.push('batch produced no approvalId');
+  if (batch.messages.length && !batch.messages[0]!.text.includes('₹')) issues.push('reminder template missing amount');
+
+  // 5. promise-date detection from a customer's reply text
+  const d = detectPromiseToPay('we will pay by 15/01, promise');
+  if (!d || d.date !== `${new Date().getFullYear()}-01-15`) issues.push(`dmy detection failed: ${JSON.stringify(d)}`);
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `cooldown+promise honoured · batch ${batch.count} msgs (${batch.decision}) · date parse ok`,
+  };
+}
+
+// --- agent workflows: A8 shift report ---------------------------------------------
+
+async function runShiftReport(c: ShiftReportCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { extractShiftReport, sanityCheck, processShiftNote } = await import('@factory/agents');
+  const { setShadowMode } = await import('@factory/core');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+  await setShadowMode(orgId, true);
+
+  // 1. deterministic extraction from a Hinglish transcript
+  const jc = (
+    await query<{ code: string | null; qty: string | null }>(
+      `select code, qty from entities where org_id=$1 and type='job_card' order by date desc limit 1`,
+      [orgId]
+    )
+  )[0];
+  if (!jc?.code) throw new Error('no job card in seed');
+  const r = extractShiftReport(`output 250 pieces, 8 reject, downtime 45 minutes due to tool change on ${jc.code}`);
+  if (r.outputQty !== 250) issues.push(`output ${r.outputQty} != 250`);
+  if (r.rejectQty !== 8) issues.push(`rejects ${r.rejectQty} != 8`);
+  if (r.downtimeMins !== 45) issues.push(`downtime ${r.downtimeMins} != 45`);
+  if (r.jobCardCode?.toUpperCase() !== jc.code.toUpperCase()) issues.push(`job card ${r.jobCardCode} != ${jc.code}`);
+
+  // 2. missing output → ONE clarifying question, never a guess
+  const clarify = await processShiftNote(orgId, 'two rejects on the second machine today');
+  if (!clarify.needsClarification) issues.push('expected a clarification ask when output is missing');
+  if (!clarify.reply.toLowerCase().includes('how many')) issues.push(`clarification unclear: ${clarify.reply}`);
+
+  // 3. full report → policy-gated job-card write (shadow → ask)
+  const full = await processShiftNote(orgId, `output 120, reject 3, downtime 20 minutes due to material shortage, job card ${jc.code}`);
+  if (full.needsClarification) issues.push(`unexpected clarification: ${full.clarification}`);
+  if (full.decision !== 'ask') issues.push(`expected ask in shadow mode, got ${full.decision}`);
+  if (!full.approvalId) issues.push('no approvalId for the shift write');
+
+  // 4. sanity flags absurd numbers
+  const flags = sanityCheck({ ...r, outputQty: (jc.qty ? Number(jc.qty) : 100) * 5 }, { qty: jc.qty });
+  if (!flags.some((f) => f.includes('2×'))) issues.push(`absurd output not flagged: ${flags.join('; ')}`);
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `extract ok · clarify ok · ${full.decision}${full.approvalId ? '+approval' : ''} · flags ok`,
+  };
+}
+
+// --- agent workflows: A10 compliance threshold -------------------------------------
+
+async function runComplianceThreshold(c: ComplianceThresholdCase): Promise<Result> {
+  const { checkEinvoiceApplicability, EINVOICE_THRESHOLD_INR } = await import('@factory/agents');
+  const issues: string[] = [];
+
+  // rule is config, and behaves: B2B + amount, B2C, and below-threshold cases
+  if (EINVOICE_THRESHOLD_INR <= 0) issues.push('threshold must be positive');
+  const ok = checkEinvoiceApplicability({ amount: EINVOICE_THRESHOLD_INR, buyerGstin: '29ABCDE1234F1Z5' });
+  if (!ok.applicable) issues.push(`B2B at threshold not applicable: ${ok.reason}`);
+  const b2c = checkEinvoiceApplicability({ amount: 500_000, buyerGstin: null });
+  if (b2c.applicable) issues.push('B2C wrongly applicable');
+  const bad = checkEinvoiceApplicability({ amount: 500_000, buyerGstin: 'HELLO' });
+  if (bad.applicable) issues.push('invalid GSTIN wrongly applicable');
+  const low = checkEinvoiceApplicability({ amount: EINVOICE_THRESHOLD_INR - 1, buyerGstin: '29ABCDE1234F1Z5' });
+  if (low.applicable) issues.push('below-threshold wrongly applicable');
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `threshold ₹${EINVOICE_THRESHOLD_INR}: B2B ✓ B2C ✗ invalid ✗ below ✗`,
+  };
+}
+
+// --- agent workflows: A13 maintenance PM -------------------------------------------
+
+async function runMaintenance(c: MaintenanceCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { checkDueMaintenance, draftMaintenanceWorkOrders } = await import('@factory/agents');
+  const { setShadowMode } = await import('@factory/core');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+  await setShadowMode(orgId, true);
+
+  // fixture: one machine overdue (45d ago + 30d interval), one recently
+  // serviced, and one stripped of its interval (must be listed, not guessed)
+  await query(
+    `update entities set data = data || jsonb_build_object('lastPmDate', to_char(current_date - 45, 'YYYY-MM-DD'), 'pmIntervalDays', 30)
+     where org_id=$1 and type='machine' and code='CNC-1'`,
+    [orgId]
+  );
+  await query(
+    `update entities set data = data - 'pmIntervalDays' where org_id=$1 and type='machine' and code='Press-1'`,
+    [orgId]
+  );
+  await query(
+    `update entities set data = data || jsonb_build_object('lastPmDate', to_char(current_date - 5, 'YYYY-MM-DD'), 'pmIntervalDays', 30)
+     where org_id=$1 and type='machine' and code='CNC-2'`,
+    [orgId]
+  );
+
+  const { due, missingInterval } = await checkDueMaintenance(orgId, 14);
+  const cnc1 = due.find((d) => d.code === 'CNC-1');
+  if (!cnc1) issues.push(`CNC-1 not flagged due (got: ${due.map((d) => d.code).join(',')})`);
+  else if (cnc1.daysOverdue !== 15) issues.push(`CNC-1 daysOverdue ${cnc1.daysOverdue} != 15`);
+  if (due.some((d) => d.code === 'CNC-2')) issues.push('CNC-2 wrongly flagged (serviced 5 days ago)');
+  if (!missingInterval.length) issues.push('expected machines without intervals to be listed, not guessed');
+
+  // draft WOs through policy: overdue machine → ask in shadow mode
+  const drafts = await draftMaintenanceWorkOrders(orgId);
+  const cnc1Draft = drafts.drafts.find((d) => d.machine === cnc1?.machine);
+  if (!cnc1Draft) issues.push('no WO drafted for CNC-1');
+  else if (cnc1Draft.decision !== 'ask') issues.push(`WO decision ${cnc1Draft.decision} != ask in shadow`);
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `CNC-1 ${cnc1?.daysOverdue}d overdue → WO ${cnc1Draft?.decision ?? '-'} · ${missingInterval.length} machines need intervals`,
+  };
+}
+
 async function main() {
   console.log('Factory AI OS — eval suite');
   const results: Result[] = [];
@@ -494,6 +736,11 @@ async function main() {
       else if (c.kind === 'override_rate') results.push(await runOverrideRate(c));
       else if (c.kind === 'weighbridge_flow') results.push(await runWeighbridge(c));
       else if (c.kind === 'remediation_pipeline') results.push(await runRemediation(c));
+      else if (c.kind === 'quote_comparison') results.push(await runQuoteComparison(c));
+      else if (c.kind === 'collections_flow') results.push(await runCollections(c));
+      else if (c.kind === 'shift_report') results.push(await runShiftReport(c));
+      else if (c.kind === 'compliance_threshold') results.push(await runComplianceThreshold(c));
+      else if (c.kind === 'maintenance_schedule') results.push(await runMaintenance(c));
     } catch (e) {
       results.push({ name: c.name, kind: c.kind, pass: false, detail: `threw: ${e instanceof Error ? e.message : String(e)}` });
     }

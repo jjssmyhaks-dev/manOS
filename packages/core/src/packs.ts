@@ -51,8 +51,17 @@ const COMMON_TOOLS = [
   'explain_metric',
   // write tools — every pack can draft actions; the policy engine governs them
   'draft_reminders',
+  'draft_reminders_batch',
   'draft_rfq',
   'create_po_draft',
+  'compare_vendor_quotes',
+  // A9/A11/A13 agent surfaces (quality, forecasting, maintenance) — every
+  // vertical inspects, forecasts and maintains machines
+  'forecast_reorder_points',
+  'log_inspection',
+  'log_defect_ncr',
+  'check_maintenance',
+  'draft_maintenance_wo',
 ];
 
 const FABRICATION: VerticalPack = {
@@ -153,6 +162,7 @@ export function getPack(vertical: string): VerticalPack {
 /** Action types the policy engine knows; packs can extend with new types. */
 export const ACTION_TYPES = [
   'send_reminder',
+  'send_reminder_batch',
   'send_rfq',
   'create_po',
   'so_create',
@@ -162,11 +172,16 @@ export const ACTION_TYPES = [
   'email_send',
   'grn_create',
   'job_card_update',
+  'create_ncr',
+  'create_maintenance_wo',
+  'update_reorder_points',
 ] as const satisfies readonly string[];
 
 export function policyDefaults(): Record<string, { decision: ApprovalDecision; note: string }> {
   const d: Record<string, { decision: ApprovalDecision; note: string }> = {};
   for (const a of ACTION_TYPES) d[a] = { decision: 'ask', note: 'default ask: human approves outbound/writes' };
   d['digest_send'] = { decision: 'auto', note: 'digests are informational' };
+  d['job_card_update'] = { decision: 'ask', note: 'operational logging — low-trust-risk orgs may set auto' };
+  d['update_reorder_points'] = { decision: 'ask', note: 'batched forecast writes — review before applying' };
   return d;
 }

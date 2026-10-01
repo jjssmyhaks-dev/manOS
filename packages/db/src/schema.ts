@@ -124,6 +124,12 @@ create table if not exists sessions (
 create table if not exists entities (
 ${ENTITY_COLUMNS}
 );
+
+-- Read convenience view: parties are entities of type 'party'. Callers
+-- (WhatsApp inbound resolution) query plain 'parties' for clarity.
+create or replace view parties as
+  select id, org_id, code, name, status, data, created_at, updated_at
+  from entities where type = 'party';
 create index if not exists entities_org_type_idx on entities (org_id, type);
 create index if not exists entities_org_name_idx on entities (org_id, lower(name));
 create index if not exists entities_party_idx on entities (org_id, party_id);
@@ -333,8 +339,13 @@ create table if not exists documents (
   confidence numeric,
   entity_id text, -- linked sales_order etc after acceptance
   content text,
+  content_hash text, -- sha256 of normalised content (A2 duplicate-submission dedupe)
   created_at timestamptz not null default now()
 );
+-- documents may predate content_hash (create table if not exists never alters);
+-- the ALTER keeps existing databases (Neon) migrable in place
+alter table documents add column if not exists content_hash text;
+create index if not exists documents_org_hash_idx on documents (org_id, content_hash);
 
 create table if not exists usage_metering (
   id uuid primary key default gen_random_uuid(),
