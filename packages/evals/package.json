@@ -8,7 +8,9 @@
   },
   "scripts": {
     "test": "tsx src/run.ts",
-    "test:golden": "tsx src/golden-runner.ts"
+    "test:golden": "tsx src/golden-runner.ts",
+    "test:documents": "tsx src/document-benchmark.ts",
+    "verify:telemetry": "tsx src/telemetry-verify.ts"
   },
   "dependencies": {
     "@factory/db": "*",

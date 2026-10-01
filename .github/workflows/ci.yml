@@ -31,7 +31,34 @@ jobs:
       - name: Eval suite (21 golden cases)
         run: npm test -w packages/evals
 
+      - name: Golden routing gate (120 cases)
+        run: npm run test:golden -w packages/evals
+
+      - name: Document benchmark (≥95% auto-processing gate)
+        run: npm run test:documents -w packages/evals
+
+      - name: Telemetry P2b end-to-end verification
+        run: npm run verify:telemetry -w packages/evals
+
+      - name: Write audit (every DB write on the trust path)
+        run: npm run audit:writes -w packages/agents
+
       - name: Production build
         run: npm run build
         env:
           FACTORY_DB_MEMORY: '1' # keep the build hermetic — no disk PGlite writes
+
+      - name: Operator smoke test (server boots, agent sweep runs)
+        run: |
+          npm run start -w apps/web &
+          SERVER_PID=$!
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:3100/ && break
+            sleep 1
+          done
+          SMOKE_RC=0
+          npm run smoke -w apps/web || SMOKE_RC=$?
+          kill $SERVER_PID || true
+          exit $SMOKE_RC
+        env:
+          FACTORY_DB_MEMORY: '1'

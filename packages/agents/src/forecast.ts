@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { query } from '@factory/db';
+import { query, audit } from '@factory/db';
 import { checkPolicyAndQueue } from '@factory/core';
 import { executeAction } from './tools/write.js';
 import { forecastDemand, type ForecastPoint } from './mrp.js';
@@ -35,6 +35,8 @@ export interface ForecastAdjustmentReport {
   seasonal: string[];
   approvalId?: string;
   decision?: string;
+  /** A11: snapshots persisted this cycle (for accuracy scoring later) */
+  snapshotsSaved?: number;
 }
 
 /** Heuristic: coefficient of variation of weekly demand above this = seasonal/lumpy. */
@@ -144,13 +146,100 @@ export async function executeUpdateReorderPoints(
   return { ok: updated > 0, result: { updated } };
 }
 
-/** Weekly entrypoint used by the cron: suggest + queue the batched write. */
+// --- A11: forecast snapshots + accuracy over time ------------------------------
+
+function mondayUTC(d: Date): string {
+  const day = (d.getUTCDay() + 6) % 7;
+  const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - day * 86_400_000);
+  return mon.toISOString().slice(0, 10);
+}
+
+/**
+ * Persist this cycle's per-item forecast (one snapshot per org+item+week,
+ * idempotent). Scoring happens once the horizon has elapsed — prediction
+ * accuracy is measured against actuals, not assumed.
+ */
+export async function recordForecastSnapshots(orgId: string, horizonWeeks = 4): Promise<number> {
+  const forecast = await forecastDemand(orgId, 12, horizonWeeks);
+  const weekStart = mondayUTC(new Date());
+  let saved = 0;
+  for (const f of forecast) {
+    // snapshots feed the accuracy report owners see — kept on the audit trail
+    await audit(orgId, 'system', 'forecast.snapshot', {
+      metadata: { item: f.item ?? f.itemId, weekStart, horizonWeeks, weeklyAvg: f.weeklyAvg, projectedUnits: f.projectedUnits },
+    });
+    const rows = await query<{ id: string }>(
+      `insert into forecast_snapshots (org_id, item_id, item_name, week_start, horizon_weeks, forecast_weekly, projected_units)
+       select $1, $2, $3, $4::date, $5, $6, $7
+       where not exists (
+         select 1 from forecast_snapshots where org_id = $1 and item_id = $2 and week_start = $4::date
+       ) returning id`,
+      [orgId, f.itemId, f.item ?? null, weekStart, horizonWeeks, f.weeklyAvg, f.projectedUnits]
+    );
+    saved += rows.length;
+  }
+  return saved;
+}
+
+export interface ForecastAccuracyRow {
+  itemId: string;
+  item: string | null;
+  weekStart: string;
+  projectedUnits: number;
+  actualUnits: number;
+  accuracyPct: number;
+}
+
+export interface ForecastAccuracyReport {
+  scored: number;
+  rows: ForecastAccuracyRow[];
+  averagePct: number | null;
+}
+
+/**
+ * Score every snapshot whose horizon has elapsed: projected units vs actual
+ * sales-order units over the same window. accuracy = 1 − |proj−actual| /
+ * max(proj, actual, 1), floored at 0 — so a forecast of 0 against real
+ * demand scores 0, and perfect hits score 100.
+ */
+export async function scoreForecastAccuracy(orgId: string, minAgeWeeks = 4): Promise<ForecastAccuracyReport> {
+  const snaps = await query<{ id: string; item_id: string; item_name: string | null; week_start: string; projected: string }>(
+    `select id, item_id, item_name, to_char(week_start, 'YYYY-MM-DD') as week_start, projected_units::text as projected
+     from forecast_snapshots
+     where org_id = $1 and week_start <= current_date - (($2::int || ' weeks')::interval)
+     order by week_start asc limit 200`,
+    [orgId, minAgeWeeks]
+  );
+  const rows: ForecastAccuracyRow[] = [];
+  for (const s of snaps) {
+    const actual = await query<{ units: string }>(
+      `select coalesce(sum(qty), 0) as units from entities
+       where org_id = $1 and type = 'sales_order'
+         and date >= $2::date and date < $2::date + (($3::int || ' weeks')::interval)`,
+      [orgId, s.week_start, minAgeWeeks]
+    );
+    const projected = Number(s.projected);
+    const actualUnits = Number(actual[0]?.units ?? 0);
+    const denom = Math.max(projected, actualUnits, 1);
+    const accuracyPct = Math.max(0, Math.round((1 - Math.abs(projected - actualUnits) / denom) * 1000)) / 10;
+    rows.push({ itemId: s.item_id, item: s.item_name, weekStart: s.week_start, projectedUnits: projected, actualUnits, accuracyPct });
+  }
+  const averagePct = rows.length ? Math.round((rows.reduce((s, r) => s + r.accuracyPct, 0) / rows.length) * 10) / 10 : null;
+  return { scored: rows.length, rows, averagePct };
+}
+
+/** Weekly entrypoint used by the cron: suggest + queue the batched write + snapshot. */
 export async function runForecastCycle(orgId: string, horizonWeeks = 4): Promise<ForecastAdjustmentReport & { decision?: string }> {
   const report = await suggestReorderAdjustments(orgId, horizonWeeks);
   if (report.suggestions.length) {
     const r = await proposeReorderPointUpdates(orgId, report.suggestions);
     report.approvalId = r.approvalId;
     report.decision = r.decision;
+  }
+  try {
+    report.snapshotsSaved = await recordForecastSnapshots(orgId, horizonWeeks);
+  } catch {
+    // snapshotting must never break the forecast cycle
   }
   return report;
 }

@@ -274,13 +274,17 @@ export async function seedDemoData(
   }
   counts.job_cards = 14;
 
-  // machines
+  // machines — data.baselines is the machine-master nominal values the P2b
+  // sensor path adopts on first sighting (telemetry.getBaseline)
   for (const m of ['CNC-1', 'CNC-2', 'Press-1', 'Assembly-1', 'Packing-1']) {
     await insertEntity(
       {
         orgId, type: 'machine', code: m, name: m, status: 'running',
         source: 'seed',
-        data: { lastPmDate: daysAgo(45), pmIntervalDays: pick([30, 60, 90], rnd) },
+        data: {
+          lastPmDate: daysAgo(45), pmIntervalDays: pick([30, 60, 90], rnd),
+          baselines: { vibration: 2.2, temperature: 68, current: 12 },
+        },
       },
       db
     );

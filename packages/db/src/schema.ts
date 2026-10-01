@@ -413,5 +413,44 @@ create table if not exists wa_registrations (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- P2b machine telemetry (Agent 13 sensor path): raw readings from the edge
+-- gateway, plus per-machine baselines the anomaly detector compares against.
+create table if not exists machine_telemetry (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  machine_code text not null,
+  metric text not null, -- vibration|temperature|run_hours|current|pressure
+  value numeric not null,
+  unit text,
+  recorded_at timestamptz not null default now(),
+  source text not null default 'gateway'
+);
+create index if not exists telemetry_machine_idx on machine_telemetry (org_id, machine_code, metric, recorded_at desc);
+
+create table if not exists telemetry_baselines (
+  org_id uuid not null,
+  machine_code text not null,
+  metric text not null,
+  baseline numeric not null,
+  threshold_pct numeric not null default 25, -- % deviation that flags an anomaly
+  updated_at timestamptz not null default now(),
+  primary key (org_id, machine_code, metric)
+);
+
+-- Agent 11: weekly forecast snapshots per item, scored against actuals so
+-- prediction accuracy is measured over time, not assumed.
+create table if not exists forecast_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  item_id text not null,
+  item_name text,
+  week_start date not null,
+  horizon_weeks integer not null default 4,
+  forecast_weekly numeric not null,
+  projected_units numeric not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists forecast_snap_idx on forecast_snapshots (org_id, item_id, week_start desc);
 `.trim();
 }

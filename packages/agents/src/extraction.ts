@@ -77,27 +77,88 @@ export function validateExtraction(ex: ExtractedPo): string[] {
   }
   if (!ex.customerName) issues.push('Customer name missing — needs mapping');
   if (!ex.poNumber) issues.push('PO number missing');
+  if (ex.totalAmount == null) issues.push('Total amount missing — cannot reconcile');
   return issues;
 }
 
 /** Mock extractor for dev/CI (no API key): deterministic parse of pasted text. */
 function mockExtract(text: string): ExtractedPo {
-  const po = text.match(/(?:PO|P\.O\.|Order)\s*(?:No\.?|number|#)?\s*[:#]?\s*([A-Z0-9\-\/]{3,})/i)?.[1] ?? null;
+  // Document numbers keep their prefix (PO-7841, INV-3301, JC/2219) — the
+  // prefix identifies the doc TYPE, stripping it loses information.
+  const po =
+    text.match(/(?:PO|P\.O\.|Order|Invoice|Quote|Quotation|Challan)\s*(?:No\.?|number|#)?\s*[:#]?\s*([A-Z]{1,4}[-\/]?\d{2,6})\b/i)?.[1] ??
+    (text.match(/\b(PO|INV|SO|JC)\s*[:#\-\/?]?\s*(\d{3,6})\b/i)?.slice(1, 3).join('-') ?? null);
   const date = text.match(/(\d{4}-\d{2}-\d{2})/)?.[1] ?? null;
   const gstin = text.match(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z])\b/)?.[1] ?? null;
-  const customer = text.match(/(?:From|Customer|Buyer|Party)\s*[:\-]\s*([^\n,]{2,60})/i)?.[1]?.trim() ?? null;
-  const total = text.match(/(?:total|value|amount)\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i)?.[1];
+
+  // Party extraction: labelled lines win, then label-free forms. A bare
+  // "To:" line is the RECEIVER (our own factory), never the buyer.
+  const ourNames =
+    /^(precision\s+metalworks|sunfresh\s+foods|greencycle\s+recyclers|texstyle\s+exports|factory\s+ai\s+os)/i;
+  const cleanName = (raw: string | undefined): string | null => {
+    const v = raw?.trim().replace(/\s+/g, ' ');
+    if (!v) return null;
+    return v.replace(/^(M\/s\.?|M\/s)\s+/i, '').trim() || null;
+  };
+  const customer =
+    [
+      text.match(/(?:From|Customer|Buyer|Party|Ordered\s*by)\s*[:\-]\s*([^\n,]{2,60})/i)?.[1],
+      text.match(/M\/s\.?\s+([A-Z][A-Za-z.& ]{2,50})/)?.[1],
+      text.match(/\b(?:PO|Order|Invoice|Quote|Challan)(?:\s*(?:No\.?|number|#))?\s*[:#\-]?\s*[A-Z0-9\-\/]+\s*[-\u2013]\s*([A-Z][A-Za-z.& ]{2,40})/)?.[1],
+      text.match(/(?:buyer|customer|party)\s*[:\-]?\s*([A-Z][A-Za-z.& ]{2,40})/i)?.[1],
+      text.match(/\bfrom\s+([A-Z][A-Za-z.& ]{2,40})/i)?.[1],
+      // "PO 7842 - Sundaram Traders" (Hinglish WhatsApp shape)
+      text.match(/\b(?:PO|INV|SO)\s*[:#\-]?\s*\d+\s*[-\u2013]\s*([A-Z][A-Za-z.& ]{2,40})/)?.[1],
+      // suffix style: "Party: Rao Metal Works" on its own line, or the line
+      // after a doc-number line ("Buyer: Greencycle Traders")
+      text.match(/\n\s*(?:Buyer|Party|Customer)\s*[:\-]?\s*([A-Z][A-Za-z.& ]{2,40})/)?.[1],
+      // trailing party line: "from Naik Traders" already covered; also
+      // "... Meena Enterprises" on the line after a PO number
+      text.match(/\bPO[\s\-]?\d+\s*\n\s*([A-Z][A-Za-z.& ]{2,40})/)?.[1],
+      // bare company line right after a doc-number line ("Purchase Order No.
+      // PO-9901 dated …\nShakti Industries orders:")
+      text.match(/\n\s*([A-Z][A-Za-z.& ]{2,40}?\s+(?:Industries|Traders|Enterprises|Works|Suppliers|Metals|Recyclers|Foods|Exports))\b/)?.[1],
+    ]
+      .map(cleanName)
+      .find((v): v is string => Boolean(v && !ourNames.test(v))) ?? null;
+
+  // totals: "Grand Total: Rs 27,104", "Total Value 53000", "Amount payable: 26400"
+  const total =
+    text.match(/(?:grand\s*total|total\s*value|total|value|amount(?:\s+payable)?)\s*[:=\-]?\s*(?:rs\.?|inr|\u20b9)?\s*([\d,]+(?:\.\d{1,2})?)/i)?.[1];
+
   const lines: PoLine[] = [];
-  const lineRe = /([A-Za-z][A-Za-z0-9 \.\-]{2,40}?)\s*[x×@]\s*(\d+)\s*(nos|kg|ltr|pcs)?\s*(?:@|rate)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)?/gi;
-  let m: RegExpExecArray | null;
-  while ((m = lineRe.exec(text)) !== null) {
+  // A: "item x|× 50 nos @ 240" / "item x 50 nos rate 240"
+  const lineA = /([A-Za-z][A-Za-z0-9 \.\-]{2,40}?)\s*[xX\u00d7]\s*(\d[\d,]*)\s*(nos|kg|ltr|pcs)?\s*(?:@|rate)?\s*(?:rs\.?|inr|\u20b9)?\s*([\d,]+(?:\.\d{1,2})?)?/gi;
+  // B: "item 50 nos @ 240" / "item 100 nos @ 240 = 24000"
+  const lineB = /([A-Za-z][A-Za-z0-9 \.\-]{2,40}?)\s+(\d[\d,]*)\s*(nos|kg|ltr|pcs)\s*(?:@|rate)?\s*(?:rs\.?|inr|\u20b9)?\s*([\d,]+(?:\.\d{1,2})?)?/gi;
+  const seen = new Set<string>();
+  const push = (m: RegExpExecArray) => {
+    const name = m[1]!.trim();
+    const key = name.toLowerCase() + '|' + m[2]!;
+    if (seen.has(key) || /^\d/.test(name)) return;
+    seen.add(key);
     lines.push({
-      itemName: m[1]!.trim(),
+      itemName: name,
       qty: Number(m[2]!.replace(/,/g, '')),
       uom: m[3] ?? null,
       rate: m[4] ? Number(m[4]!.replace(/,/g, '')) : null,
     });
+  };
+  let m: RegExpExecArray | null;
+  while ((m = lineA.exec(text)) !== null) push(m);
+  while ((m = lineB.exec(text)) !== null) push(m);
+  // C: invoice style — "Item: Laser-cut Plate 6mm" + "Qty: 40 nos   Rate: Rs 620/- each"
+  const itemName = text.match(/\b(?:Item|Description)\s*[:\-]\s*([A-Za-z][A-Za-z0-9 \-.]{2,40})/i)?.[1]?.trim();
+  const qtyRate = text.match(/\bQty\s*[:\-]?\s*(\d[\d,]*)\s*(nos|kg|ltr|pcs)?[^\n]*?\bRate\s*[:\-]?\s*(?:rs\.?|inr|\u20b9)?\s*([\d,]+(?:\.\d{1,2})?)/i);
+  if (itemName && qtyRate && !seen.has(itemName.toLowerCase() + '|' + qtyRate[1]!)) {
+    lines.push({
+      itemName,
+      qty: Number(qtyRate[1]!.replace(/,/g, '')),
+      uom: qtyRate[2] ?? null,
+      rate: Number(qtyRate[3]!.replace(/,/g, '')),
+    });
   }
+
   return {
     kind: 'po',
     poNumber: po, poDate: date, customerName: customer, gstin: gstin ?? undefined,

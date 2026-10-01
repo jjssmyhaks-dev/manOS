@@ -66,7 +66,7 @@ Every agent follows the shared pattern — deterministic tools first, LLM only t
 | # | Agent | Module / surface | Status |
 | --- | --- | --- | --- |
 | 1 | Orchestrator / Data Chat | `packages/agents/src/orchestrator.ts` + read tools (`query_data`, `ask_data`, `searchSimilar` citations) | ✅ built · 120 golden questions pass |
-| 2 | Document Intake | `extraction.ts` + `dedupe.ts` (file-hash + field-signature dedupe), review queue → SO | ✅ built · eval `document_dedupe` |
+| 2 | Document Intake | `extraction.ts` + `dedupe.ts` (file-hash + field-signature dedupe), review queue → SO | ✅ built · eval `document_dedupe` · golden-document benchmark 100% across 31 fields (≥95% auto-processing gate OPEN) |
 | 3 | Activity / Trust Layer | `activity.ts`, `/activity`, `/api/activity/export` (CSV/PDF), undo + feedback | ✅ built · `npm run audit:writes` gate green |
 | 4 | Collections | `collections.ts` — cooldown + promise-to-pay honoured, ONE batch approval (`draft_reminders_batch`), `recordPromiseToPay`, date detection from replies | ✅ built · eval `collections_flow` |
 | 5 | Procurement | `draft_rfq`/`create_po_draft` + `procurement.ts` (`compare_vendor_quotes`: parse → rank → recommend → persist `vendor_quote`) | ✅ built · eval `quote_comparison` |
@@ -75,9 +75,9 @@ Every agent follows the shared pattern — deterministic tools first, LLM only t
 | 8 | Production / Shift | `shift.ts` — voice note → deterministic extraction → clarification if missing → job-card write via policy | ✅ built · eval `shift_report` |
 | 9 | Quality | `quality.ts` + `log_inspection`/`log_defect_ncr` — NCR/CAPA drafts with similar-defect retrieval and 30-day trend escalation | ✅ built · eval `quality_flow` |
 | 10 | Compliance | `einvoice.ts`/`eway.ts` + `compliance.ts` — threshold rule in config, GSP errors → human queue after 3 attempts | ✅ built · evals `einvoicing`, `ewb_validation`, `compliance_threshold` |
-| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval | ✅ built · eval `override_rate` covers the trust metric; forecast maths exercised via `runForecastCycle` |
+| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval; per-week `forecast_snapshots` scored against actuals (`scoreForecastAccuracy`) | ✅ built · eval `override_rate` covers the trust metric; forecast maths exercised via `runForecastCycle`; snapshot accuracy measured, not assumed |
 | 12 | Customer Service | `customer-service.ts` — order status, complaint tickets, angry-tone human handoff (webhook resolves customer numbers) | ✅ built · eval `customer_service_flow` · self-registration verified live |
-| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed | ✅ built · eval `maintenance_schedule` |
+| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed; **P2b telemetry path built**: edge gateway → `POST /api/ingest/machine` → `detectAnomaly` vs per-metric baselines (EWMA-tracked) → `telemetry_anomaly` activity + urgent WhatsApp alert | ✅ built · eval `maintenance_schedule` |
 
 Scheduled agents (4, 10, 11, 13 + digests/remediation) run inside the nightly cron (`/api/jobs/daily`); the weekly pilot digest (Mondays) reports their outcomes per org. A5/A9/A11/A13 are also conversational tools the orchestrator can call.
 
@@ -130,8 +130,10 @@ npm install
 npm run dev              # apps/web on http://localhost:3100
 npm test                 # eval suite (21 golden flow cases) via tsx
 npm run test:golden -w packages/evals   # Agent 1 golden-question gate (30 per vertical)
+npm run test:documents -w packages/evals # Agent 2 golden-document benchmark (≥95% auto-processing gate)
 npm run audit:writes -w packages/agents # trust-layer write-coverage audit (Agent 3 done-when)
 npm run build            # production build of apps/web
+npm run smoke -w apps/web # operator smoke test against the running server (BASE_URL to target a deploy)
 ```
 
 First page load auto-seeds the demo org **Precision Metalworks Pvt Ltd** (fabrication pack)
