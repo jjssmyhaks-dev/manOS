@@ -40,6 +40,9 @@ jobs:
       - name: Telemetry P2b end-to-end verification
         run: npm run verify:telemetry -w packages/evals
 
+      - name: Forecast-accuracy surfaces verification
+        run: npm run verify:forecast-accuracy -w packages/evals
+
       - name: Write audit (every DB write on the trust path)
         run: npm run audit:writes -w packages/agents
 

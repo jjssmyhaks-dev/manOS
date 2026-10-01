@@ -1,5 +1,6 @@
 import { query } from '@factory/db';
 import { overrideRateReport } from './override-rate.js';
+import { forecastAccuracySummary, type ForecastAccuracySummary } from './forecast.js';
 
 /**
  * Weekly pilot feedback digest — the case-study raw material (PRD v2 §8).
@@ -49,6 +50,8 @@ export interface PilotDigestReport {
     lastWeekPct: number | null;
     verdict: string;
   };
+  /** A11 trust metric: projected vs actual demand — zero rows = not measured yet */
+  forecastAccuracy: ForecastAccuracySummary;
   topCorrectionThemes: ThemeCount[];
   narrative: string[];
 }
@@ -171,6 +174,13 @@ export async function generatePilotDigest(orgId: string, orgName?: string, verti
     shadowMode: String(settings.shadow_mode ?? 'true') !== 'false',
   };
 
+  const forecastAccuracy = await forecastAccuracySummary(orgId, 3).catch(() => ({
+    scored: 0,
+    averagePct: null as number | null,
+    verdict: 'Forecast accuracy unavailable.',
+    worst: [] as Array<{ item: string | null; weekStart: string; projectedUnits: number; actualUnits: number; accuracyPct: number }>,
+  }));
+
   const narrative: string[] = [];
   narrative.push(
     usage.actionsLast7d === 0
@@ -183,6 +193,13 @@ export async function generatePilotDigest(orgId: string, orgName?: string, verti
     narrative.push('All 3 setup steps done — send the "go live from shadow mode" note if they have not yet.');
   }
   narrative.push(override.verdict);
+  if (forecastAccuracy.scored > 0 && forecastAccuracy.averagePct !== null) {
+    narrative.push(
+      `Forecast accuracy ${forecastAccuracy.averagePct}% over ${forecastAccuracy.scored} scored week${forecastAccuracy.scored > 1 ? 's' : ''}${
+        forecastAccuracy.averagePct >= 85 ? ' — projections are landing.' : ' — reorder suggestions need owner review.'
+      }`
+    );
+  }
   if (usage.feedbackDown > 0 || usage.rejectionsLast7d > 0) {
     const top = topCorrectionThemes[0];
     narrative.push(
@@ -206,6 +223,7 @@ export async function generatePilotDigest(orgId: string, orgName?: string, verti
       lastWeekPct: override.lastWeek?.overrideRatePct ?? null,
       verdict: override.verdict,
     },
+    forecastAccuracy,
     topCorrectionThemes,
     narrative,
   };
@@ -237,7 +255,14 @@ export function pilotDigestText(r: PilotDigestReport): string {
     `*Usage (7d):* ${r.usage.chatsLast7d} chats · ${r.usage.documentsLast7d} docs · ${r.usage.actionsLast7d} agent actions`,
     `*Trust:* ${r.usage.undosLast7d} undos · ${r.usage.rejectionsLast7d} rejections · override ${r.override.lastWeekPct ?? '–'}% (${r.override.trend})`,
     `*Pending approvals:* ${r.usage.approvalsPending} · 👍 ${r.usage.feedbackUp} / 👎 ${r.usage.feedbackDown}`,
+    `*Forecast:* ${r.forecastAccuracy.scored === 0 ? 'not measured yet — snapshots started this week' : `${r.forecastAccuracy.averagePct}% avg vs actual (${r.forecastAccuracy.scored} wk)`}`,
   ];
+  if (r.forecastAccuracy.worst.length) {
+    lines.push('*Biggest forecast misses:*');
+    for (const w of r.forecastAccuracy.worst.slice(0, 3)) {
+      lines.push(`• ${w.item ?? '?'}: projected ${w.projectedUnits}, actual ${w.actualUnits} (${w.accuracyPct}%)`);
+    }
+  }
   if (r.topCorrectionThemes.length) {
     lines.push('*Top correction themes:*');
     for (const t of r.topCorrectionThemes) lines.push(`• ${t.theme} (${t.count})`);

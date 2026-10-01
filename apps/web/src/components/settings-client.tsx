@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { CheckIcon, SparklesIcon, MessageCircleIcon, CalendarClockIcon, ShieldCheckIcon, BrainIcon, BuildingIcon } from 'lucide-react';
+import { CheckIcon, SparklesIcon, MessageCircleIcon, CalendarClockIcon, ShieldCheckIcon, BrainIcon, BuildingIcon, TargetIcon } from 'lucide-react';
 
 interface PolicyRow { action_type: string; decision: 'auto' | 'ask' | 'deny' }
 interface FactRow { id: string; fact: string; status: string; source: string }
@@ -29,6 +29,19 @@ interface AgentJobRow {
   enabled: boolean;
   last_run_at: string | null;
   last_result: Record<string, unknown> | null;
+}
+interface AccuracyMiss {
+  item: string | null;
+  weekStart: string;
+  projectedUnits: number;
+  actualUnits: number;
+  accuracyPct: number;
+}
+interface AccuracySummary {
+  scored: number;
+  averagePct: number | null;
+  verdict: string;
+  worst: AccuracyMiss[];
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -65,6 +78,7 @@ export function SettingsClient() {
   const [jobSchedule, setJobSchedule] = useState('daily');
   const [jobInstruction, setJobInstruction] = useState('');
   const [jobMsg, setJobMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [accuracy, setAccuracy] = useState<AccuracySummary | null>(null);
 
   const load = useCallback(async () => {
     const s = await fetch('/api/settings').then((r) => r.json());
@@ -87,6 +101,7 @@ export function SettingsClient() {
     setCurrent(o.session?.orgSlug ?? null);
     fetch('/api/auth/me').then((r) => r.json()).then((m) => setIsSignedIn(Boolean(m.user))).catch(() => {});
     fetch('/api/agent-jobs').then((r) => r.json()).then((d) => setJobs(d.jobs ?? [])).catch(() => {});
+    fetch('/api/forecast/accuracy').then((r) => r.json()).then((d) => setAccuracy(d.ok ? d : null)).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -455,6 +470,62 @@ export function SettingsClient() {
             </div>
           ))}
           {jobs.length === 0 && <p className="text-xs text-muted-foreground">Nothing scheduled yet — try &ldquo;Every Friday, chase overdue invoices past 15 days&rdquo;.</p>}
+        </CardContent>
+      </Card>
+
+      {/* Forecast accuracy */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm"><TargetIcon className="h-4 w-4 text-rose-600" /> Forecast accuracy — projection vs what actually sold</CardTitle>
+          <CardDescription>
+            The agent snapshots its demand forecast every week and scores it once the horizon passes. Misses are listed, not hidden —
+            that&apos;s how the reorder suggestions earn trust.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {accuracy === null ? (
+            <p className="text-xs text-muted-foreground">Accuracy could not be loaded.</p>
+          ) : accuracy.scored === 0 ? (
+            <p className="text-xs text-muted-foreground">{accuracy.verdict}</p>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <span className="text-2xl font-semibold">{accuracy.averagePct}%</span>
+                <span className="text-xs text-muted-foreground">
+                  average accuracy · {accuracy.scored} scored week{accuracy.scored > 1 ? 's' : ''}
+                </span>
+              </div>
+              {accuracy.worst.length > 0 && (
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50 text-left text-[11px] text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-1.5 font-medium">Item</th>
+                        <th className="px-3 py-1.5 font-medium">Week</th>
+                        <th className="px-3 py-1.5 text-right font-medium">Projected</th>
+                        <th className="px-3 py-1.5 text-right font-medium">Actual</th>
+                        <th className="px-3 py-1.5 text-right font-medium">Accuracy</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {accuracy.worst.map((w, i) => (
+                        <tr key={`${w.item ?? '?'}-${w.weekStart}-${i}`} className="border-t">
+                          <td className="px-3 py-1.5">{w.item ?? '—'}</td>
+                          <td className="px-3 py-1.5 text-muted-foreground">{w.weekStart}</td>
+                          <td className="px-3 py-1.5 text-right">{w.projectedUnits}</td>
+                          <td className="px-3 py-1.5 text-right">{w.actualUnits}</td>
+                          <td className={`px-3 py-1.5 text-right font-medium ${w.accuracyPct >= 85 ? 'text-emerald-600' : w.accuracyPct >= 60 ? 'text-amber-600' : 'text-red-600'}`}>
+                            {w.accuracyPct}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">{accuracy.verdict}</p>
+            </>
+          )}
         </CardContent>
       </Card>
 

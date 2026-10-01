@@ -212,11 +212,14 @@ export async function scoreForecastAccuracy(orgId: string, minAgeWeeks = 4): Pro
   );
   const rows: ForecastAccuracyRow[] = [];
   for (const s of snaps) {
+    // actuals: the same item's sales-order units over the SAME window the
+    // projection covered (item-scoped — an org-wide sum would flatter or
+    // punish every item with other products' demand)
     const actual = await query<{ units: string }>(
       `select coalesce(sum(qty), 0) as units from entities
-       where org_id = $1 and type = 'sales_order'
+       where org_id = $1 and type = 'sales_order' and item_id = $4 and status != 'cancelled'
          and date >= $2::date and date < $2::date + (($3::int || ' weeks')::interval)`,
-      [orgId, s.week_start, minAgeWeeks]
+      [orgId, s.week_start, minAgeWeeks, s.item_id]
     );
     const projected = Number(s.projected);
     const actualUnits = Number(actual[0]?.units ?? 0);
@@ -226,6 +229,38 @@ export async function scoreForecastAccuracy(orgId: string, minAgeWeeks = 4): Pro
   }
   const averagePct = rows.length ? Math.round((rows.reduce((s, r) => s + r.accuracyPct, 0) / rows.length) * 10) / 10 : null;
   return { scored: rows.length, rows, averagePct };
+}
+
+/**
+ * Owner-facing summary (Settings card / digest section): the average accuracy
+ * and the recent per-item hits/misses. Rows are ordered worst-first so the
+ * owner sees the misses without scrolling. Zero snapshots (product too young)
+ * reads as an honest "not measured yet", never a fabricated number.
+ */
+export interface ForecastAccuracySummary {
+  scored: number;
+  averagePct: number | null;
+  verdict: string;
+  worst: Array<{ item: string | null; weekStart: string; projectedUnits: number; actualUnits: number; accuracyPct: number }>;
+}
+
+export async function forecastAccuracySummary(orgId: string, limit = 5): Promise<ForecastAccuracySummary> {
+  const report = await scoreForecastAccuracy(orgId);
+  const worst = [...report.rows]
+    .sort((a, b) => a.accuracyPct - b.accuracyPct)
+    .slice(0, limit)
+    .map((r) => ({ item: r.item, weekStart: r.weekStart, projectedUnits: r.projectedUnits, actualUnits: r.actualUnits, accuracyPct: r.accuracyPct }));
+  const verdict =
+    report.scored === 0
+      ? 'Not measured yet — snapshots started collecting this week; accuracy appears once the horizon elapses.'
+      : report.averagePct === null
+        ? 'No scorable snapshots yet.'
+        : report.averagePct >= 85
+          ? 'Forecast is tracking real demand well.'
+          : report.averagePct >= 60
+            ? 'Forecast is in the right range — use reorder suggestions as a floor and review weekly.'
+            : 'Forecast misses real demand often — treat suggestions as a starting point and correct them in approvals; every correction makes the next week sharper.';
+  return { scored: report.scored, averagePct: report.averagePct, verdict, worst };
 }
 
 /** Weekly entrypoint used by the cron: suggest + queue the batched write + snapshot. */

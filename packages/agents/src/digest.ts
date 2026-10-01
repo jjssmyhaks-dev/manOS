@@ -4,6 +4,7 @@ import { getPack } from '@factory/core';
 import { getModelConfig } from './models.js';
 import { scanAnomalies, anomalyLines } from './anomalies.js';
 import { runMrp } from './mrp.js';
+import { forecastAccuracySummary } from './forecast.js';
 import { predictDeliveryDelays, delayRiskLines, forecastCash, cashForecastLines } from './insights.js';
 import { checkExportDeadlines, exportFollowupLines } from './exports.js';
 
@@ -135,6 +136,24 @@ export async function generateDigest(orgId: string): Promise<Digest> {
     const lines = exportFollowupLines(deadlines);
     if (lines.length) sections.push({ key: 'export_docs', title: '🚢 Export documents', lines });
   } catch {}
+
+  // forecast honesty line: how last month's projections compared to actual
+  // demand — owners see the misses, not just the confident projections
+  try {
+    const acc = await forecastAccuracySummary(orgId, 3);
+    if (acc.scored > 0) {
+      sections.push({
+        key: 'forecast_accuracy',
+        title: '🎯 Forecast vs actual',
+        lines: [
+          `Average accuracy: ${acc.averagePct}% across ${acc.scored} scored week${acc.scored > 1 ? 's' : ''}`,
+          ...acc.worst.map((w) => `• ${w.item ?? '?'} (wk ${w.weekStart}): projected ${w.projectedUnits}, actual ${w.actualUnits} → ${w.accuracyPct}%`),
+        ],
+      });
+    }
+  } catch {
+    // accuracy scoring must never break the digest
+  }
 
   const narrativeFallback = [
     `${org.name} — daily digest (${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })})`,

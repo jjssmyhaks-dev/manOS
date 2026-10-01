@@ -43,8 +43,8 @@ export { extractDefectFromPhoto, createInspectionRecord, draftNcr, executeCreate
 export type { Defect, InspectionInput, NcrDraftResult } from './quality.js';
 export { checkEinvoiceApplicability, runComplianceCheck, recordComplianceStatus, EINVOICE_THRESHOLD_INR } from './compliance.js';
 export type { Applicability, ComplianceOutcome, ComplianceRunReport } from './compliance.js';
-export { suggestReorderAdjustments, proposeReorderPointUpdates, executeUpdateReorderPoints, runForecastCycle, recordForecastSnapshots, scoreForecastAccuracy } from './forecast.js';
-export type { ReorderSuggestion, ForecastAdjustmentReport, ForecastAccuracyRow, ForecastAccuracyReport } from './forecast.js';
+export { suggestReorderAdjustments, proposeReorderPointUpdates, executeUpdateReorderPoints, runForecastCycle, recordForecastSnapshots, scoreForecastAccuracy, forecastAccuracySummary } from './forecast.js';
+export type { ReorderSuggestion, ForecastAdjustmentReport, ForecastAccuracyRow, ForecastAccuracyReport, ForecastAccuracySummary } from './forecast.js';
 export { ingestReading, detectAnomaly, getBaseline, upsertBaseline, recentAnomalies, createMaintenanceAlert, METRIC_UNITS } from './telemetry.js';
 export type { TelemetryReading, TelemetryMetric, Baseline, AnomalyVerdict, IngestResult, MaintenanceAlertResult } from './telemetry.js';
 export { handleCustomerMessage, getCustomerOrders, createComplaintTicket, isAngryTone } from './customer-service.js';
