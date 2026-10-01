@@ -107,7 +107,7 @@ export async function proposeReorderPointUpdates(
   suggestions: ReorderSuggestion[]
 ): Promise<{ decision: string; approvalId?: string; count: number; reason: string }> {
   const parsed = UpdateSchema.safeParse({
-    updates: suggestions.map((s) => ({ itemId: s.itemId, reorderPoint: s.suggestedReorderPoint })),
+    updates: suggestions.map((s) => ({ itemId: s.itemId, item: s.item ?? undefined, from: s.currentReorderPoint ?? undefined, reorderPoint: s.suggestedReorderPoint })),
   });
   if (!parsed.success) {
     return { decision: 'skipped', count: 0, reason: 'no valid suggestions to apply' };

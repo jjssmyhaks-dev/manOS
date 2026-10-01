@@ -91,6 +91,21 @@ export interface MaintenanceCase {
   name: string;
 }
 
+export interface QualityCase {
+  kind: 'quality_flow';
+  name: string;
+}
+
+export interface CustomerServiceCase {
+  kind: 'customer_service_flow';
+  name: string;
+}
+
+export interface DedupeCase {
+  kind: 'document_dedupe';
+  name: string;
+}
+
 export type EvalCase =
   | ExtractionCase
   | MetricCase
@@ -105,7 +120,10 @@ export type EvalCase =
   | CollectionsCase
   | ShiftReportCase
   | ComplianceThresholdCase
-  | MaintenanceCase;
+  | MaintenanceCase
+  | QualityCase
+  | CustomerServiceCase
+  | DedupeCase;
 
 export const GOLDEN_CASES: EvalCase[] = [
   // --- extraction -----------------------------------------------------------
@@ -219,5 +237,20 @@ Total: 12000`,
   {
     kind: 'maintenance_schedule',
     name: 'calendar-pm-due-to-work-order',
+  },
+  // --- agent workflows: A9 quality (inspection → NCR) --------------------------
+  {
+    kind: 'quality_flow',
+    name: 'inspection-fail-to-ncr-approval',
+  },
+  // --- agent workflows: A12 customer service -----------------------------------
+  {
+    kind: 'customer_service_flow',
+    name: 'status-complaint-escalation',
+  },
+  // --- agent workflows: A2 duplicate-submission dedupe -------------------------
+  {
+    kind: 'document_dedupe',
+    name: 'hash-and-field-signature-dedupe',
   },
 ];

@@ -18,8 +18,8 @@ export { runDueAgentJobs, runAgentJobNow, listAgentJobs, addAgentJob, setAgentJo
 export type { AgentJob, AgentJobRunResult } from './agent-jobs.js';
 export { recordAgentAction, listActivity, undoAgentAction, setActionFeedback, withinUndoWindow, undoWindowText, UNDO_WINDOW_MINUTES } from './activity.js';
 // A2: document dedupe (file-hash + fields) lives with extraction helpers
-export { findDuplicateDocument } from './dedupe.js';
-export type { DuplicateCheckInput } from './dedupe.js';
+export { findDuplicateDocument, stampContentHash, contentHash } from './dedupe.js';
+export type { DuplicateCheckInput, DuplicateMatch } from './dedupe.js';
 export type { AgentActionRow, ActionSource, RecordAgentActionInput, UndoResult, ActivityListOpts } from './activity.js';
 export { extractWeighbridgeFromText, extractWeighbridgeFromImage, processWeighbridgeTicket, gradeRate, looksLikeWeighbridgeText, WeighbridgeTicketSchema } from './weighbridge.js';
 export type { WeighbridgeTicket, WeighbridgeIntakeResult } from './weighbridge.js';
@@ -49,6 +49,7 @@ export { handleCustomerMessage, getCustomerOrders, createComplaintTicket, isAngr
 export type { CustomerOrderView, CustomerServiceResult, ComplaintTicketResult } from './customer-service.js';
 export { checkDueMaintenance, draftMaintenanceWorkOrders, executeCreateMaintenanceWo, PM_WARNING_WINDOW_DAYS } from './maintenance.js';
 export type { DueMaintenance, MaintenanceDraftResult } from './maintenance.js';
+export { classify as classifyIntent } from './mock-model.js';
 export * from './embeddings.js';
 export * from './memory.js';
 export * from './tools/read.js';

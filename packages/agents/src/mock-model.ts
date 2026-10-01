@@ -24,7 +24,7 @@ interface PlannedCall {
   input: Record<string, unknown>;
 }
 
-function classify(text: string, priorAssistant = ''): PlannedCall | null {
+export function classify(text: string, priorAssistant = ''): PlannedCall | null {
   const t = text.toLowerCase();
 
   // --- write intents (highest priority) --------------------------------------
@@ -36,19 +36,27 @@ function classify(text: string, priorAssistant = ''): PlannedCall | null {
     const names = t.match(/(?:for|of)\s+([a-z0-9][a-z0-9 \-]{2,40})/);
     return { toolName: 'draft_rfq', input: names?.[1]?.trim() ? { itemNames: [names[1].trim()] } : {} };
   }
-  if (/(create|raise|make|draft|bana)\b.*\bpo\b|purchase order/.test(t)) {
-    // "po of 100 nos MS Bracket 200mm from Sharma at 240" → item stops at from/at/for
-    const item = t.match(/(?:po of|of|for)\s+(?:\d+\s*[a-z]+\s+)?([a-z0-9][a-z0-9 \-]*?)(?=\s+(?:from|at|for|@)\b|$)/);
-    const vendor = t.match(/from\s+([a-z][a-z0-9 &]*?)(?=\s+(?:at|for|@)\b|$)/);
+  if (/(\b(?:create|raise|make|draft|bana)\b[^.]*\bpo\b)|purchase order/.test(t)) {
+    // "po of 100 nos MS Bracket 200mm from Sharma at 240" -> item stops at from/at/for
+    const item = t.match(/(?:po of|po for|of|for)\s+(?:\d+\s*[a-z]+\s+)?([a-z0-9][a-z0-9 ,\-]*?)(?=\s+(?:from|at|for|@)\b|$)/);
+    const vendor = t.match(/from\s+([a-z][a-z0-9 &]*?)(?=\s+(?:at|for|@|,)\b|$)/);
     const qty = Number(t.match(/(\d+)\s*(nos|pcs|kg|ltr|units?)\b/)?.[1] ?? 0);
-    const rate = Number(t.match(/@\s*(?:rs\.?|₹)?\s*(\d+)/)?.[1] ?? Number(t.match(/at\s+(?:rs\.?|₹)?\s*(\d+)/)?.[1] ?? 0));
+    const rate = Number(t.match(/@\s*(?:rs\.?|\u20b9)?\s*(\d+)/)?.[1] ?? Number(t.match(/at\s+(?:rs\.?|\u20b9)?\s*(\d+)/)?.[1] ?? 0));
     return { toolName: 'create_po_draft', input: { vendorName: vendor?.[1]?.trim() ?? '', itemName: item?.[1]?.trim() ?? '', qty, rate } };
   }
-  if (/(shift|job card|job-card|output|production log)/.test(t)) {
+  // shift LOGGING (a write) only when a shift/output/production-log signal is
+  // present, or a job card comes with a quantity -- "show open job cards" is a READ
+  const shiftQty = Number(t.match(/(\d+)\s*(nos|pcs|units?|pieces?)\b/)?.[1] ?? 0);
+  if (!/(input vs output|yield|recovery)/.test(t) && (/(shift|output|production log)/.test(t) || (/(job[ -]?card)/.test(t) && shiftQty > 0))) {
     const code = t.match(/jc[-\s]?(\d+)/i)?.[1];
-    const qty = Number(t.match(/(\d+)\s*(nos|pcs|units?)\b/)?.[1] ?? 0);
-    return { toolName: 'log_shift_output', input: { jobCardCode: code ? `JC-${code}` : '', outputQty: qty } };
+    return { toolName: 'log_shift_output', input: { jobCardCode: code ? `JC-${code}` : '', outputQty: shiftQty } };
   }
+  // vertical pack reads (fmcg / scrap / exports) + maintenance
+  if (/(expir|best before|fssai|batch)/.test(t)) return { toolName: 'expiry_report', input: {} };
+  if (/(yield|recovery|input vs output|input.*output.*weight)/.test(t)) return { toolName: 'yield_report', input: {} };
+  if (/(fx|forex|dollar|usd|currency exposure)/.test(t)) return { toolName: 'fx_exposure', input: {} };
+  if (/(packing list|commercial invoice|shipping (docs?|documents?)|export (docs?|documents?)|documents? (are\s+)?pending|lut|iec)/.test(t)) return { toolName: 'export_docs_status', input: {} };
+  if (/(maintenance|service due|pm due|machine service)/.test(t)) return { toolName: 'check_maintenance', input: {} };
 
     // --- confirm follow-up: prior assistant offered a draft --------------------
   const confirmation = /^(yes|yeah|yep|ok|okay|haan|ha|kar do|kardo|proceed|go ahead|sure|please do|do it)\b/.test(t.trim());
@@ -59,36 +67,56 @@ function classify(text: string, priorAssistant = ''): PlannedCall | null {
   }
 
   // --- metric routing --------------------------------------------------------
-  if (/(top|best)\s+(customers?|parties|buyers)/.test(t) || /customer.*sales|sales.*by customer/.test(t))
+  if (/(top|best)\s+(?:\d+\s+)?(customers?|parties|buyers|distributors?)/.test(t) || /customer.*sales|sales.*by customer/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'sales_by_customer_30d' } };
-  if (/(open|pending|running)\s+(jobs?|job cards?)/.test(t) || /wip/.test(t))
+  // Hinglish: "sabse zyada/bada orders kis se aaye / customer kaun hai" = top customers
+  if (/sabse\s+(?:zyada|bada|badha)/.test(t) && /(udhaar|overdue|bakaya)/.test(t))
+    return { toolName: 'list_overdue', input: {} };
+  if (/sabse\s+(?:zyada|bada|badha)/.test(t) && /(kis|kisse|kaun)/.test(t))
+    return { toolName: 'query_data', input: { metricKey: 'sales_by_customer_30d' } };
+  if (/(open|pending|running)\s+(?:production\s+)?(?:jobs?|job cards?)/.test(t) || /wip/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'open_job_cards' } };
-  if (/(delayed|late).*(orders?|deliver)/.test(t))
+  // both orders: "delayed orders" and "which orders are delayed?"
+  if (/(delayed|late).*(orders?|deliver)/.test(t) || /(orders?|deliver)[a-z]*\s+(?:are\s+)?(delayed|late)/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'top_delayed_orders' } };
-  if (/(cash|collections?|payments? received)/.test(t))
+  if (/(cash|collections?|payments? received|realisation)/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'cash_position' } };
   if (/(stock value|inventory value|valuation)/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'stock_value' } };
-  if (/(receivable|total outstanding|collections pending)/.test(t))
+  // an overdue LIST beats the receivables total when the user says "overdue"
+  // or asks for ageing ("older than 45 days")
+  if (/(overdue|bakaya|udhaar)\b|(pending|awaiting)\s+payments?|payments?\s+(are\s+)?pending/.test(t) || (/receivab|outstanding/.test(t) && /\d+\s*(day|din)/.test(t)))
+    return { toolName: 'list_overdue', input: {} };
+  if (/(receivable|total outstanding|collections pending|payables|owe us)/.test(t))
     return { toolName: 'query_data', input: { metricKey: 'receivables_total' } };
 
   // --- read intents ----------------------------------------------------------
-  const hasOverdue = /(overdue|outstanding|bakaya|udhaar|pending payment|receivab)/.test(t);
-  const hasSales = /(sales|sale|bikri|revenue|orders (this|last)|this month)/.test(t);
+  const hasOverdue = /(overdue|outstanding|bakaya|udhaar|pending payments?|receivab)/.test(t);
+  const hasSales = /(sales|sale|bikri|revenue|kharidari|orders?\b|this month|this week|last week)/.test(t);
   const hasStock = /(stock|inventory|bracket|item|sku|material)/.test(t);
+  const availability = /(in stock|stock of|how many|how much|available|kitn[ai]|ka stock|batao|do we have|on hand)/.test(t);
   const hasReorder = /(reorder|low stock|below|shortage|restock)/.test(t);
 
   // most specific first
   if (hasReorder) return { toolName: 'reorder_check', input: {} };
-  if (hasStock && /(in stock|stock of|how many|how much|available)/.test(t)) {
-    // naive item-name extraction: quoted word(s) or noun after "is/for/of"
-    const quoted = text.match(/["“']([^"”']{2,40})["”']/);
-    const after = text.match(/(?:is|for|of|about)\s+([a-z0-9][a-z0-9 \-]{2,40}?)(?:\s+(?:in|available|stock|items?|brackets?|bracket)\b|$|\?)/i);
-    const name = (quoted?.[1] ?? after?.[1] ?? '').trim();
+  if (hasStock && availability) {
+    // naive item-name extraction: quoted words, "X ka stock", "how many X",
+    // or a noun after is/for/of
+    const quoted = text.match(/["\u201c']([^"\u201d']{2,40})["\u201d']/);
+    const kaStock = text.match(/([A-Za-z0-9][A-Za-z0-9 .\-]{2,40}?)\s+ka\s+(?:stock|maal)/i);
+    const howMany = text.match(/(?:how many|how much)\s+([A-Za-z0-9][A-Za-z0-9 .\-]{2,40}?)(?:\s+do we have|\s+is\b|\s+are\b|\s+on hand|$|\?)/i);
+    const after = text.match(/(?:is|for|of|about|stock of)\s+([a-z0-9][a-z0-9 \-]{2,40}?)(?:\s+(?:in|available|stock|items?|brackets?|bracket)\b|\s+do we have|$|\?)/i);
+    const name = (quoted?.[1] ?? kaStock?.[1] ?? howMany?.[1] ?? after?.[1] ?? '').trim();
     return { toolName: 'get_item_stock', input: name ? { itemName: name } : { itemName: t.split(/\s+/).slice(-2).join(' ') } };
   }
   if (hasOverdue) return { toolName: 'list_overdue', input: {} };
   if (hasSales) return { toolName: 'sales_summary', input: {} };
+  // "How many Pickle Jar 500g do we have?" -- an inventory question with no
+  // stock keyword still lands on the item-stock tool
+  if (availability) {
+    const name = text.replace(/^(how many|how much)\s+/i, '').split(/\s+do we have|\?/)[0]!.trim();
+    return { toolName: 'get_item_stock', input: { itemName: name } };
+  }
   return null;
 }
 

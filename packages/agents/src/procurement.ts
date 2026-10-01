@@ -1,4 +1,4 @@
-import { query } from '@factory/db';
+import { query, audit } from '@factory/db';
 
 /**
  * Agent 5 — Procurement (PRD F5): the QUOTE side of the loop. Reorder→RFQ
@@ -169,6 +169,13 @@ export async function compareVendorQuotes(
   if (parsed.length > 0 && recommended == null) {
     escalations.push('No quote meets the rate/lead-time requirement — renegotiate or extend the need-by date.');
   }
+
+  // audit trail: quotes received are bookkeeping for the purchase thread —
+  // the PO decision itself goes through policy separately
+  await audit(orgId, 'agent', 'procurement.quotes_compared', {
+    entityId: rfq?.id,
+    metadata: { rfqCode, quotes: parsed.length, recommended: recommended?.vendorName ?? null },
+  });
 
   return { rfqCode, quotes: parsed, requiredBy, recommended, escalations };
 }

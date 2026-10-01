@@ -4,7 +4,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Confirmation } from '@/components/ai-elements';
 import { Badge } from '@/components/ui/badge';
-import { InboxIcon } from 'lucide-react';
+import { InboxIcon, LayersIcon } from 'lucide-react';
+import { BatchApprovalCard } from '@/components/batch-approval';
+
+const BATCH_TYPES = ['send_reminder_batch', 'update_reorder_points'];
 
 interface Approval {
   id: string;
@@ -94,26 +97,46 @@ export function ApprovalsClient() {
         </Card>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {shown.map((a) => (
-            <Confirmation
-              key={a.id}
-              title={a.action_type.replaceAll('_', ' ')}
-              preview={a.preview}
-              risk={a.risk}
-              status={a.status}
-              payload={asPayload(a)}
-              onApprove={() => decide(a.id, 'approve')}
-              onReject={() => decide(a.id, 'reject')}
-              onSave={async (payload) => {
-                setBusyId(a.id);
-                try {
-                  await savePayload(a.id, payload);
-                } finally {
-                  setBusyId(null);
-                }
-              }}
-            />
-          ))}
+          {shown.map((a) => {
+            const payload = asPayload(a);
+            const isBatch = BATCH_TYPES.includes(a.action_type) && a.status === 'pending';
+            return (
+              <div key={a.id} className={isBatch ? 'md:col-span-2' : undefined}>
+                {isBatch && (
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <LayersIcon className="h-3.5 w-3.5" /> Batch action — every item is previewable and editable before you decide
+                  </div>
+                )}
+                <Confirmation
+                  title={a.action_type.replaceAll('_', ' ')}
+                  preview={a.preview}
+                  risk={a.risk}
+                  status={a.status}
+                  payload={payload}
+                  onApprove={() => decide(a.id, 'approve')}
+                  onReject={() => decide(a.id, 'reject')}
+                  onSave={async (next) => {
+                    setBusyId(a.id);
+                    try {
+                      await savePayload(a.id, next);
+                    } finally {
+                      setBusyId(null);
+                    }
+                  }}
+                />
+                {isBatch && payload && (
+                  <BatchApprovalCard
+                    actionType={a.action_type}
+                    payload={payload}
+                    busy={busyId === a.id}
+                    onChange={async (next) => {
+                      await savePayload(a.id, next);
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -25,6 +25,15 @@ import {
   executeAction,
 } from '@factory/agents';
 import { query as dbQuery } from '@factory/db';
+import {
+  getRegistrationState,
+  markAsked,
+  isExpired,
+  clearPending,
+  identifyOrderReply,
+  extractOrderCodes,
+  matchAndAttach,
+} from '@/lib/customer-registration';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -51,7 +60,7 @@ async function resolveInboundOrg(from: string): Promise<{ orgId: string; role: s
   if (byOwner[0]) return { orgId: byOwner[0].org_id, role: 'owner' };
 
   const byParty = await query<{ org_id: string }>(
-    `select org_id from parties where phone = $1 limit 1`,
+    `select org_id from parties where phone = $1 or ',' || coalesce(phone,'') || ',' like '%,' || $1 || ',%' limit 1`,
     [from]
   );
   if (byParty[0]) return { orgId: byParty[0].org_id, role: 'customer' };
@@ -281,6 +290,42 @@ export async function POST(req: Request) {
         continue;
       }
 
+      // A12 self-registration: an UNKNOWN customer number (no owner row, no
+      // party row) either supplies a code (matched → number attached to the
+      // party, workspace resolved) or is asked once to identify itself. The
+      // general agent never chats with a number that hasn't identified.
+      {
+        const knownOwner = await dbQuery<{ org_id: string }>(`select org_id from notify_settings where owner_phone = $1 limit 1`, [msg.from]);
+        const knownParty = await dbQuery<{ org_id: string; id: string; name: string | null }>(
+          `select org_id, id, coalesce(name, data->>'name') as name from parties where phone = $1 or ',' || coalesce(phone,'') || ',' like '%,' || $1 || ',%' limit 1`,
+          [msg.from]
+        );
+        if (!knownOwner[0] && !knownParty[0]) {
+          const codes = extractOrderCodes(msg.text);
+          if (codes.length) {
+            let matched: Awaited<ReturnType<typeof matchAndAttach>> | null = null;
+            for (const c of codes) {
+              matched = await matchAndAttach(msg.from, c);
+              if (matched.matched) break;
+            }
+            await replyTo(msg.from, matched!.reply ?? identifyOrderReply());
+            handled.push(`register:${msg.messageId}:${matched!.matched ? 'matched' : 'no-match'}`);
+            continue;
+          }
+          const state = await getRegistrationState(msg.from);
+          if (!state.pending || isExpired(state)) {
+            await markAsked(null, msg.from); // org unknown until they identify
+            await replyTo(msg.from, identifyOrderReply());
+            handled.push(`register:${msg.messageId}:asked`);
+            continue;
+          }
+          // pending but again no code: one gentle nudge, then stay quiet (no loops)
+          await clearPending(msg.from);
+          handled.push(`register:${msg.messageId}:pending-no-code`);
+          continue;
+        }
+      }
+
       if (cmd.cmd === 'other' && looksLikeWeighbridgeText(msg.text)) {
         const target = await resolveInboundOrg(msg.from);
         if (target) {
@@ -297,7 +342,7 @@ export async function POST(req: Request) {
       {
         const partyRow = (
           await dbQuery<{ org_id: string; id: string; name: string | null }>(
-            `select org_id, id, coalesce(name, data->>'name') as name from parties where phone = $1 limit 1`,
+            `select org_id, id, coalesce(name, data->>'name') as name from parties where phone = $1 or ',' || coalesce(phone,'') || ',' like '%,' || $1 || ',%' limit 1`,
             [msg.from]
           )
         )[0];

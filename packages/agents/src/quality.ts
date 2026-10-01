@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { query } from '@factory/db';
 import { checkPolicyAndQueue } from '@factory/core';
 import { executeAction } from './tools/write.js';
+import { recordAgentAction } from './activity.js';
 import { getModel, getModelConfig } from './models.js';
 
 /**
@@ -77,6 +78,21 @@ export async function createInspectionRecord(orgId: string, input: InspectionInp
       }),
     ]
   );
+  // trust layer: failed inspections escalate visibly (they seed an NCR next)
+  await recordAgentAction({
+    orgId,
+    actor: `user:${input.inspector ?? 'inspector'}`,
+    actionType: 'inspection_recorded',
+    summary: failed > 0
+      ? `Inspection failed ${failed}/${input.results.length} checks${input.itemRef ? ` on ${input.itemRef}` : ''} — NCR follow-up recommended`
+      : `Inspection passed (${input.results.length} checks)${input.itemRef ? ` on ${input.itemRef}` : ''}`,
+    reason: failed > 0 ? 'Failed checks escalate automatically; the NCR draft rides the policy engine' : 'Operational QC logging',
+    sources: input.jobCardCode ? [{ type: 'job_card', label: `Job card ${input.jobCardCode}` }] : [],
+    entityType: 'inspection',
+    entityId: rows[0]!.id,
+    status: 'executed',
+    metadata: { failed, checklistKey: input.checklistKey ?? null },
+  });
   return { ok: true, inspectionId: rows[0]!.id, failed };
 }
 
@@ -178,7 +194,8 @@ export async function draftNcr(
 /** Executor for the 'create_ncr' action type (wired into executeAction). */
 export async function executeCreateNcr(
   orgId: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  _via?: unknown
 ): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   const p = payload as { defectType?: string; severity?: string; affectedQty?: number; description?: string; itemRef?: string | null; jobCardCode?: string | null; capaSuggestion?: string; source?: string };
   const rows = await query<{ id: string; code: string | null }>(

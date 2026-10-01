@@ -65,19 +65,19 @@ Every agent follows the shared pattern — deterministic tools first, LLM only t
 
 | # | Agent | Module / surface | Status |
 | --- | --- | --- | --- |
-| 1 | Orchestrator / Data Chat | `packages/agents/src/orchestrator.ts` + read tools (`query_data`, `ask_data`, `searchSimilar` citations) | ✅ built |
-| 2 | Document Intake | `extraction.ts` + `dedupe.ts` (file-hash + field-signature dedupe), review queue → SO | ✅ built |
-| 3 | Activity / Trust Layer | `activity.ts`, `/activity`, `/api/activity/export` (CSV/PDF), undo + feedback | ✅ built |
-| 4 | Collections | `collections.ts` — cooldown + promise-to-pay honoured, ONE batch approval (`draft_reminders_batch`), `recordPromiseToPay`, date detection from replies | ✅ built |
-| 5 | Procurement | `draft_rfq`/`create_po_draft` + `procurement.ts` (`compare_vendor_quotes`: parse → rank → recommend → persist `vendor_quote`) | ✅ built |
-| 6 | Weighbridge / Scrap | `weighbridge.ts`, WhatsApp photo/text intake → shadow draft → approval → ledger | ✅ built |
-| 7 | Export Buyer Follow-up | `exports.ts` — LUT/IEC + packing-list watch, drafted buyer messages | ✅ built |
-| 8 | Production / Shift | `shift.ts` — voice note → deterministic extraction → clarification if missing → job-card write via policy | ✅ built |
-| 9 | Quality | `quality.ts` + `log_inspection`/`log_defect_ncr` — NCR/CAPA drafts with similar-defect retrieval and 30-day trend escalation | ✅ built |
-| 10 | Compliance | `einvoice.ts`/`eway.ts` + `compliance.ts` — threshold rule in config, GSP errors → human queue after 3 attempts | ✅ built |
-| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval | ✅ built |
-| 12 | Customer Service | `customer-service.ts` — order status, complaint tickets, angry-tone human handoff (webhook resolves customer numbers) | ✅ built |
-| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed | ✅ built |
+| 1 | Orchestrator / Data Chat | `packages/agents/src/orchestrator.ts` + read tools (`query_data`, `ask_data`, `searchSimilar` citations) | ✅ built · 120 golden questions pass |
+| 2 | Document Intake | `extraction.ts` + `dedupe.ts` (file-hash + field-signature dedupe), review queue → SO | ✅ built · eval `document_dedupe` |
+| 3 | Activity / Trust Layer | `activity.ts`, `/activity`, `/api/activity/export` (CSV/PDF), undo + feedback | ✅ built · `npm run audit:writes` gate green |
+| 4 | Collections | `collections.ts` — cooldown + promise-to-pay honoured, ONE batch approval (`draft_reminders_batch`), `recordPromiseToPay`, date detection from replies | ✅ built · eval `collections_flow` |
+| 5 | Procurement | `draft_rfq`/`create_po_draft` + `procurement.ts` (`compare_vendor_quotes`: parse → rank → recommend → persist `vendor_quote`) | ✅ built · eval `quote_comparison` |
+| 6 | Weighbridge / Scrap | `weighbridge.ts`, WhatsApp photo/text intake → shadow draft → approval → ledger | ✅ built · eval `weighbridge_flow` |
+| 7 | Export Buyer Follow-up | `exports.ts` — LUT/IEC + packing-list watch, drafted buyer messages | ✅ built · digest-section + read-tool coverage |
+| 8 | Production / Shift | `shift.ts` — voice note → deterministic extraction → clarification if missing → job-card write via policy | ✅ built · eval `shift_report` |
+| 9 | Quality | `quality.ts` + `log_inspection`/`log_defect_ncr` — NCR/CAPA drafts with similar-defect retrieval and 30-day trend escalation | ✅ built · eval `quality_flow` |
+| 10 | Compliance | `einvoice.ts`/`eway.ts` + `compliance.ts` — threshold rule in config, GSP errors → human queue after 3 attempts | ✅ built · evals `einvoicing`, `ewb_validation`, `compliance_threshold` |
+| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval | ✅ built · eval `override_rate` covers the trust metric; forecast maths exercised via `runForecastCycle` |
+| 12 | Customer Service | `customer-service.ts` — order status, complaint tickets, angry-tone human handoff (webhook resolves customer numbers) | ✅ built · eval `customer_service_flow` · self-registration verified live |
+| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed | ✅ built · eval `maintenance_schedule` |
 
 Scheduled agents (4, 10, 11, 13 + digests/remediation) run inside the nightly cron (`/api/jobs/daily`); the weekly pilot digest (Mondays) reports their outcomes per org. A5/A9/A11/A13 are also conversational tools the orchestrator can call.
 
@@ -127,9 +127,11 @@ Scheduled agents (4, 10, 11, 13 + digests/remediation) run inside the nightly cr
 
 ```bash
 npm install
-npm run dev          # apps/web on http://localhost:3100
-npm test             # eval suite (18 golden cases) via tsx
-npm run build        # production build of apps/web
+npm run dev              # apps/web on http://localhost:3100
+npm test                 # eval suite (21 golden flow cases) via tsx
+npm run test:golden -w packages/evals   # Agent 1 golden-question gate (30 per vertical)
+npm run audit:writes -w packages/agents # trust-layer write-coverage audit (Agent 3 done-when)
+npm run build            # production build of apps/web
 ```
 
 First page load auto-seeds the demo org **Precision Metalworks Pvt Ltd** (fabrication pack)

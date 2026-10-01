@@ -1,6 +1,7 @@
 import { query } from '@factory/db';
 import { checkPolicyAndQueue } from '@factory/core';
 import { executeAction } from './tools/write.js';
+import { recordAgentAction } from './activity.js';
 
 /**
  * Agent 4 — Collections (PRD F6): overdue receivables tracked with reminder
@@ -215,6 +216,20 @@ export async function recordPromiseToPay(
       }),
     ]
   );
+  // trust layer: the promise lands on the activity timeline — reminders for
+  // this invoice pause from here, so the owner must see why
+  await recordAgentAction({
+    orgId,
+    actor: `user:${input.via ?? 'web'}`,
+    actionType: 'promise_to_pay',
+    summary: `Recorded promise-to-pay for ${inv.code ?? 'invoice'} — ${input.promiseDate}${input.note ? ` (${input.note})` : ''}. Reminders paused until then.`,
+    reason: 'Owner-confirmed commitment; the collections agent honours it instead of chasing',
+    sources: [{ type: 'invoice', label: `Invoice ${inv.code ?? ''}`, ref: input.invoiceId }],
+    entityType: 'promise_to_pay',
+    entityId: rows[0]!.id,
+    status: 'executed',
+    metadata: { invoiceId: input.invoiceId, promiseDate: input.promiseDate },
+  });
   return { ok: true, promiseId: rows[0]!.id };
 }
 

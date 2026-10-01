@@ -14,6 +14,9 @@ import {
   type ShiftReportCase,
   type ComplianceThresholdCase,
   type MaintenanceCase,
+  type QualityCase,
+  type CustomerServiceCase,
+  type DedupeCase,
 } from './cases.js';
 
 /**
@@ -722,6 +725,166 @@ async function runMaintenance(c: MaintenanceCase): Promise<Result> {
   };
 }
 
+// --- agent workflows: A9 quality (inspection → NCR) -------------------------------
+
+async function runQuality(c: QualityCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { createInspectionRecord, draftNcr, executeCreateNcr } = await import('@factory/agents');
+  const { decideApproval } = await import('@factory/core');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+
+  // 1. checklist path: failed inspection is marked for NCR follow-up
+  const insp = await createInspectionRecord(orgId, {
+    itemRef: 'SS Enclosure 4U', jobCardCode: 'JC-401', checklistKey: 'dispatch_qc',
+    results: [
+      { item: 'Dimensions ok', pass: true },
+      { item: 'Surface finish', pass: false, note: 'deep scratch on face B' },
+    ],
+    inspector: 'eval-qc',
+  });
+  if (!insp.ok || insp.failed !== 1) issues.push(`inspection failed count ${insp.failed} != 1`);
+  const stored = await query<{ status: string | null }>(`select status from entities where id=$1`, [insp.inspectionId]);
+  if (stored[0]?.status !== 'ncr') issues.push(`inspection status ${stored[0]?.status} != ncr`);
+
+  // 2. photo-path outcome → NCR draft through the policy engine (shadow → ask)
+  const ncr = await draftNcr(
+    orgId,
+    { defectType: 'scratch', severity: 'medium', affectedQty: 2, description: 'deep scratch on face B of enclosure' },
+    { itemRef: 'SS Enclosure 4U', jobCardCode: 'JC-401', source: 'photo', inspectionId: insp.inspectionId }
+  );
+  if (ncr.decision !== 'ask') issues.push(`NCR decision ${ncr.decision} != ask in shadow mode`);
+  if (!ncr.approvalId) issues.push('NCR draft produced no approvalId');
+
+  // 3. trend detection: two more similar NCRs within 30 days escalate
+  await query(
+    `insert into entities (id, org_id, type, status, code, source, data)
+     values (gen_random_uuid()::text, $1, 'ncr', 'open', 'NCR-EVAL-1', 'agent', $2::jsonb),
+             (gen_random_uuid()::text, $1, 'ncr', 'open', 'NCR-EVAL-2', 'agent', $2::jsonb)`,
+    [orgId, JSON.stringify({ defectType: 'scratch', description: 'scratch on face', itemRef: 'SS Enclosure 4U' })]
+  );
+  const trend = await draftNcr(
+    orgId,
+    { defectType: 'scratch', severity: 'low', affectedQty: 1, description: 'another scratch on the same face' },
+    { itemRef: 'SS Enclosure 4U', source: 'manual' }
+  );
+  if (!trend.trendAlert || !trend.trendAlert.includes('Trend alert')) issues.push(`trend not escalated: ${trend.trendAlert}`);
+
+  // 4. approval executes the NCR entity
+  let executed = false;
+  if (ncr.approvalId) {
+    const res = await decideApproval(ncr.approvalId, 'approve', 'eval-owner', (pl) => executeCreateNcr(orgId, pl as Record<string, unknown>));
+    executed = (res as { status?: string }).status === 'executed';
+    if (!executed) issues.push(`NCR approval did not execute: ${JSON.stringify(res).slice(0, 100)}`);
+  }
+  const saved = await query<{ c: string }>(
+    `select count(*) as c from entities where org_id=$1 and type='ncr' and data->>'defectType'='scratch' and data->>'source'='photo'`,
+    [orgId]
+  );
+  if (executed && Number(saved[0]?.c ?? 0) < 1) issues.push('NCR entity missing after execution');
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `inspect→fail 1 → NCR ${ncr.decision}${executed ? '→executed' : ''} · trend escalated`,
+  };
+}
+
+// --- agent workflows: A12 customer service ------------------------------------------
+
+async function runCustomerService(c: CustomerServiceCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { handleCustomerMessage, isAngryTone, getCustomerOrders } = await import('@factory/agents');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+
+  const party = (
+    await query<{ id: string; name: string | null }>(
+      `select id, coalesce(name, data->>'name') as name from entities
+       where org_id=$1 and type='party' and coalesce(data->>'kind','customer')='customer' limit 1`,
+      [orgId]
+    )
+  )[0];
+  if (!party) throw new Error('no customer in seed');
+  const orders = await getCustomerOrders(orgId, party.id);
+  if (!orders.length) throw new Error('no orders for the chosen customer');
+
+  // 1. status question → grounded reply naming an order code
+  const status = await handleCustomerMessage(orgId, { customerId: party.id, customerName: party.name ?? 'Customer', text: 'where is my order?' });
+  if (status.intent !== 'status') issues.push(`intent ${status.intent} != status`);
+  if (orders.length === 1 && !status.reply.includes(orders[0]!.code ?? '')) issues.push('status reply missing the order code');
+  if (orders.length > 1 && !status.reply.includes(orders[0]!.code ?? '')) {
+    // disambiguation path must list order codes
+    if (!orders.some((o) => status.reply.includes(o.code ?? ''))) issues.push('disambiguation lists no order codes');
+  }
+
+  // 2. complaint → ticket entity created
+  const complaint = await handleCustomerMessage(orgId, { customerId: party.id, customerName: party.name ?? 'Customer', text: 'the last batch had a problem, some pieces are damaged' });
+  if (complaint.intent !== 'complaint' || !complaint.ticketId) issues.push(`complaint not ticketed: ${complaint.intent}`);
+  if (complaint.ticketId) {
+    const t = await query<{ c: string }>(`select count(*) as c from entities where org_id=$1 and type='complaint' and id=$2`, [orgId, complaint.ticketId]);
+    if (Number(t[0]?.c ?? 0) !== 1) issues.push('complaint entity missing');
+  }
+
+  // 3. angry tone → escalation + ticket flagged, human handoff reply
+  if (!isAngryTone('this is the worst service, total fraud, I will go to consumer court!')) issues.push('angry tone not detected');
+  if (isAngryTone('there is a small delay, when will it ship?')) issues.push('polite message wrongly flagged angry');
+  const angry = await handleCustomerMessage(orgId, { customerId: party.id, customerName: party.name ?? 'Customer', text: 'worst service ever, this is fraud, I will take legal action!' });
+  if (!angry.escalated) issues.push('angry message not escalated');
+  if (angry.ticketId) {
+    const t = await query<{ status: string | null }>(`select status from entities where org_id=$1 and type='complaint' and id=$2`, [orgId, angry.ticketId]);
+    if (t[0]?.status !== 'escalated') issues.push(`escalated ticket status ${t[0]?.status} != escalated`);
+  }
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `status ✓ · complaint ${complaint.ticketId ? 'ticketed' : '-'} · escalation ✓`,
+  };
+}
+
+// --- agent workflows: A2 duplicate-submission dedupe ---------------------------------
+
+async function runDedupe(c: DedupeCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { findDuplicateDocument, stampContentHash } = await import('@factory/agents');
+  await initDb();
+  const { orgId } = await seedDemoData('precision-metalworks');
+  const issues: string[] = [];
+
+  const text = 'PO No: EVAL-DUP-77 Date: 2026-10-01 Total: 45000';
+  const doc = await query<{ id: string }>(
+    `insert into documents (org_id, kind, source, status, extraction, content)
+     values ($1,'po','whatsapp','review',$2::jsonb,$3) returning id`,
+    [orgId, JSON.stringify({ poNumber: 'EVAL-DUP-77', totalAmount: 45000 }), text]
+  );
+  await stampContentHash(orgId, doc[0]!.id, text);
+
+  // exact resubmission → hash match
+  const byHash = await findDuplicateDocument({ orgId, content: text });
+  if (!byHash || byHash.matchOn !== 'hash' || byHash.documentId !== doc[0]!.id) {
+    issues.push(`hash dedupe failed: ${JSON.stringify(byHash)}`);
+  }
+  // same PO re-typed slightly differently → field-signature match
+  const byFields = await findDuplicateDocument({
+    orgId,
+    content: 'po no eval-dup-77 total 45000 thanks',
+    fields: { poNumber: 'EVAL-DUP-77', totalAmount: 45000 },
+  });
+  if (!byFields || byFields.matchOn !== 'fields') issues.push(`field dedupe failed: ${JSON.stringify(byFields)}`);
+  // a different PO → no match
+  const fresh = await findDuplicateDocument({ orgId, content: 'PO No: EVAL-OTHER-1 Total: 999', fields: { poNumber: 'EVAL-OTHER-1', totalAmount: 999 } });
+  if (fresh) issues.push('false-positive duplicate on a different PO');
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || 'hash ✓ · field-signature ✓ · new PO passes ✓',
+  };
+}
+
 async function main() {
   console.log('Factory AI OS — eval suite');
   const results: Result[] = [];
@@ -741,6 +904,9 @@ async function main() {
       else if (c.kind === 'shift_report') results.push(await runShiftReport(c));
       else if (c.kind === 'compliance_threshold') results.push(await runComplianceThreshold(c));
       else if (c.kind === 'maintenance_schedule') results.push(await runMaintenance(c));
+      else if (c.kind === 'quality_flow') results.push(await runQuality(c));
+      else if (c.kind === 'customer_service_flow') results.push(await runCustomerService(c));
+      else if (c.kind === 'document_dedupe') results.push(await runDedupe(c));
     } catch (e) {
       results.push({ name: c.name, kind: c.kind, pass: false, detail: `threw: ${e instanceof Error ? e.message : String(e)}` });
     }

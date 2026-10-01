@@ -126,9 +126,14 @@ ${ENTITY_COLUMNS}
 );
 
 -- Read convenience view: parties are entities of type 'party'. Callers
--- (WhatsApp inbound resolution) query plain 'parties' for clarity.
-create or replace view parties as
-  select id, org_id, code, name, status, data, created_at, updated_at
+-- (WhatsApp inbound resolution) query plain 'parties' for clarity; phone is
+-- hoisted from data so number-based routing works without JSON operators.
+-- DROP first: CREATE OR REPLACE VIEW cannot add/rename columns of an existing
+-- view (older deploys created this view without the phone column).
+drop view if exists parties;
+create view parties as
+  select id, org_id, code, name, status, data, data->>'phone' as phone,
+         created_at, updated_at
   from entities where type = 'party';
 create index if not exists entities_org_type_idx on entities (org_id, type);
 create index if not exists entities_org_name_idx on entities (org_id, lower(name));
@@ -397,6 +402,16 @@ create table if not exists agent_jobs (
   last_run_at timestamptz,
   last_result jsonb,
   created_at timestamptz not null default now()
+);
+
+-- WhatsApp customer self-registration: which numbers were asked to identify
+-- themselves (A12 extension). Settings carry pending/attempts/askedAt/expiresAt.
+create table if not exists wa_registrations (
+  phone text primary key,
+  org_id uuid,
+  settings jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 `.trim();
 }
