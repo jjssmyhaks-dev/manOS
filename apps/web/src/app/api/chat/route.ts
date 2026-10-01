@@ -1,5 +1,6 @@
 import { runOrchestrator, ChatRequestSchema } from '@factory/agents';
 import { getSession } from '@/lib/session';
+import { limit, clientKey } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -13,6 +14,11 @@ export async function POST(req: Request) {
     const session = await getSession();
     if (session.orgId === 'none') {
       return Response.json({ error: 'no org' }, { status: 400 });
+    }
+    // LLM spend guard: 20 messages/min per org on the streaming chat
+    const rl = limit(`org:${session.orgId}`, 20, 60);
+    if (!rl.ok) {
+      return Response.json({ error: `Rate limit — retry in ${rl.retryAfterSec}s.` }, { status: 429 });
     }
     const raw = (await req.json()) as {
       messages?: Array<{ role: string; parts?: Array<{ type: string; text?: string }>; content?: string }>;

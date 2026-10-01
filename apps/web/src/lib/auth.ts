@@ -97,7 +97,15 @@ async function startSession(userId: string, orgId: string): Promise<void> {
     [token, userId, orgId, String(SESSION_DAYS)]
   );
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: SESSION_DAYS * 86400 });
+  // secure=true in production — over plain http (local dev) the browser would
+  // drop the cookie entirely, so it is conditional
+  jar.set(SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: SESSION_DAYS * 86400,
+  });
 }
 
 export interface SessionUser {
@@ -135,4 +143,20 @@ export async function signout(): Promise<void> {
     await query('delete from sessions where token = $1', [token]).catch(() => {});
   }
   jar.delete(SESSION_COOKIE);
+}
+
+/** Housekeeping: drop expired sessions (wired into the daily cron via /api/jobs/daily). */
+export async function purgeExpiredSessions(): Promise<number> {
+  const r = await query<{ id: string }>('delete from sessions where expires_at <= now() returning id');
+  return r.length;
+}
+
+/** Brute-force backstop: prune a user's stale sessions after a successful signin. */
+export async function pruneUserSessions(userId: string, keep = 10): Promise<void> {
+  await query(
+    `delete from sessions where user_id = $1 and token not in (
+       select token from sessions where user_id = $1 order by expires_at desc limit $2
+     )`,
+    [userId, keep]
+  ).catch(() => {});
 }

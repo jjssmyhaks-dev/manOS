@@ -164,6 +164,34 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 | `CRON_SECRET` | Bearer guard for the daily cron (`/api/jobs/daily`) |
 | `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API outbound. Without them sends run in echo mode — recorded and audited but not delivered (dev default). Set the owner number under **Settings → WhatsApp delivery**. |
 | `OPERATOR_WHATSAPP` / `OPERATOR_EMAIL` + `RESEND_API_KEY` | Platform-side only: where the **weekly pilot feedback digest** is delivered (WhatsApp needs the WhatsApp vars above; email via Resend). Without them the digest stays queued (`pilot_digest` template) and visible on `/pilot`. |
+| `SARVAM_API_KEY` | Sarvam AI speech-to-text for WhatsApp voice notes (Indic languages). Without it the bot asks senders to type. |
+| `GSP_PROVIDER` + `GSTZEN_API_KEY` | e-Invoice/e-way-bill GSP (`gstzen`, sandbox by default) behind `packages/connectors/gsp.ts`. |
+| `MACHINE_INGEST_TOKEN` | Bearer guard for the machine telemetry gateway (`POST /api/ingest/machine`); org-scoped variant `<token>:<orgId>`. |
+| `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN` | Webhook signature verification + hub verification for the WhatsApp webhook. |
+| `ZOHO_CLIENT_ID/SECRET/REGION` | Zoho Books one-click connect (operator OAuth client). |
+
+## External APIs (what to sign up for)
+
+| API | Used for | Env | Required? |
+| --- | --- | --- | --- |
+| **OpenRouter** (openrouter.ai) | LLM for the orchestrator, extraction, drafts | `OPENROUTER_API_KEY` | Without it the mock model answers — demo only |
+| **WhatsApp Cloud API** (developers.facebook.com) | Owner alerts, approvals, digests, intake bot | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Echo mode without it (safe staging) |
+| **Sarvam AI** (dashboard.sarvam.ai) | Indic voice-note transcription | `SARVAM_API_KEY` | Optional |
+| **GSP — Gstzen** (gstzen.com) | IRN (e-Invoice) + e-way bill generation | `GSP_PROVIDER=gstzen`, `GSTZEN_API_KEY` | Sandbox by default |
+| **Neon Postgres** (neon.tech) | Production database + pgvector | `DATABASE_URL` | Local PGlite without it (dev only) |
+| **Zoho Books** (api-console.zoho.com) | Accounting sync (OAuth, one-click connect) | `ZOHO_CLIENT_ID/SECRET` | Optional connector |
+| **QuickBooks Online** | Accounting sync (intuit OAuth) | via Connectors page | Optional connector |
+| **Resend** (resend.com) | Email delivery of the pilot digest | `RESEND_API_KEY` | Optional |
+| **Tally** (desktop, no cloud API) | Voucher push via the desktop connector | device token on the Connectors page | Optional connector |
+
+## Production readiness
+
+- **Rate limiting** (`apps/web/src/lib/rate-limit.ts`): sliding-window limiter — signin 10/5min per IP+email, signup 5/h per IP, chat 20/min per org (LLM spend guard), telemetry ingest 600/min. In-memory per instance (fine for single-node and Vercel's per-instance model); swap in Upstash Redis behind the same `limit()` signature when traffic grows.
+- **Health probe** (`GET /api/health`): DB round-trip latency + integration wiring booleans — point BetterStack/UptimeRobot here; returns 503 when the DB is unreachable.
+- **Sessions**: scrypt password hashes, httpOnly `secure` cookies in production, server-side 30-day sessions, expired-session purge in the nightly cron, stale-session pruning per user after signin.
+- **Fail-soft UI**: route `error.tsx` (retryable), `global-error.tsx` (root-layout crash), `not-found.tsx` — no white screens.
+- **Security headers** (`next.config.ts`): CSP, `X-Frame-Options: DENY`, nosniff, referrer + permissions policy.
+- **Verification before every deploy**: `npm test`, `test:golden`, `test:documents`, `verify:telemetry`, `audit:writes` all gate in CI, then the production build boots and `npm run smoke -w apps/web` runs against it (`BASE_URL=…` for any deploy).
 
 ## Eval suite
 

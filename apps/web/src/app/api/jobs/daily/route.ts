@@ -14,6 +14,7 @@ import {
   type AgentJobRunResult,
 } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
+import { purgeExpiredSessions } from '@/lib/auth';
 import { query, audit } from '@factory/db';
 import { parseZohoConfig, ZohoBooksConnector, parseQboConfig, QuickBooksConnector, parseTallyServerConfig, tallySync } from '@factory/connectors';
 import { recordSyncHistory } from '@factory/core';
@@ -170,6 +171,14 @@ export async function POST(req: Request) {
 
   const reports = await runMonitoring();
 
+  // housekeeping: drop expired sessions so the table cannot grow unbounded
+  let sessionsPurged = 0;
+  try {
+    sessionsPurged = await purgeExpiredSessions();
+  } catch (e) {
+    console.error('session purge failed:', e);
+  }
+
   // weekly pilot feedback digest — the case-study raw material (queued as a
   // notification every Monday UTC; POST /api/jobs/pilot-digest forces a run)
   let pilotDigest: Awaited<ReturnType<typeof runPilotDigests>> | null = null;
@@ -181,6 +190,7 @@ export async function POST(req: Request) {
 
   return Response.json({
     ok: true, results, monitored: reports.length, reports, dispatch, agentJobs: jobResults.length,
+    sessionsPurged,
     nightlySync: { synced: syncReport.synced.length, failures: syncReport.failures.length },
     einvoicing: einvoicing ? { generated: einvoicing.generated.length, skipped: einvoicing.skipped, failed: einvoicing.failures.length } : null,
     pilotDigest,

@@ -1,5 +1,6 @@
 import { ingestReading, type TelemetryReading } from '@factory/agents';
 import { audit } from '@factory/db';
+import { limit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
@@ -26,6 +27,11 @@ function guard(req: Request, orgId: string): Response | null {
 }
 
 export async function POST(req: Request) {
+  // burst guard per gateway (600/min ≈ 10 sensors at 1 Hz); the token guard
+  // below is the real auth, this just stops runaway devices drowning the DB
+  const burst = limit('ingest:machine', 600, 60);
+  if (!burst.ok) return Response.json({ error: 'ingest rate limited' }, { status: 429 });
+
   const body = (await req.json().catch(() => null)) as
     | { orgId?: string; readings?: TelemetryReading[]; machineCode?: string; metric?: string; value?: number; unit?: string }
     | null;

@@ -8,9 +8,10 @@
  *
  * Checks (spec pilot-readiness: "operator opens the OS and it works"):
  *   GET  /                 → 2xx–3xx (dashboard renders)
+ *   GET  /api/health       → { ok: true } (DB round-trips, integrations wired)
  *   GET  /api/jobs/daily   → { ok: true } (agent sweep runs end-to-end)
  *   POST /api/jobs/daily   → { ok: true } (full daily agent run completes)
- *   GET  /ingest/health    → gateway liveness (optional; skips when absent)
+ *   POST /api/ingest/machine → gateway answers (optional; skips when absent)
  */
 const BASE = (process.env.BASE_URL ?? 'http://localhost:3100').replace(/\/$/, '');
 
@@ -30,6 +31,15 @@ try {
   check('GET /', ok, `HTTP ${status}`);
 } catch (e) {
   check('GET /', false, String(e));
+}
+
+// Health probe: DB round-trip + integration wiring (what uptime monitors hit).
+try {
+  const res = await fetch(`${BASE}/api/health`);
+  const body = await res.json().catch(() => ({}));
+  check('GET /api/health', res.ok && body.ok === true, `HTTP ${res.status} db=${body.checks?.db?.ms ?? '?'}ms`);
+} catch (e) {
+  check('GET /api/health', false, String(e));
 }
 
 // Agent sweep: GET is the monitoring snapshot, POST runs the full daily loop.
