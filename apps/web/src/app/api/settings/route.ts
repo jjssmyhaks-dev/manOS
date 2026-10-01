@@ -19,10 +19,20 @@ export async function GET() {
   const wa = whatsappEnvConfig();
   const platform = platformHasAiKey();
   const shadow = await isShadowMode(s.orgId);
+  const orgRow = await query<{ name: string; settings: Record<string, unknown> | null }>(
+    'select name, settings from organizations where id = $1 limit 1',
+    [s.orgId]
+  );
+  const orgSettings = (orgRow[0]?.settings ?? {}) as { gstin?: string; address?: string };
   return Response.json({
     policies,
     facts,
     shadow,
+    profile: {
+      name: orgRow[0]?.name ?? s.orgName,
+      gstin: orgSettings.gstin ?? '',
+      address: orgSettings.address ?? '',
+    },
     notify: {
       owner_phone: notify.ownerPhone,
       auto_send: notify.autoSend,
@@ -42,7 +52,7 @@ export async function GET() {
 export async function POST(req: Request) {
   const s = await getSession();
   const body = (await req.json()) as {
-    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_model_route' | 'save_notify' | 'dispatch_now' | 'set_shadow_mode';
+    action: 'set_policy' | 'add_fact' | 'archive_fact' | 'set_model_route' | 'save_notify' | 'dispatch_now' | 'set_shadow_mode' | 'save_profile';
     actionType?: string;
     decision?: 'auto' | 'ask' | 'deny';
     fact?: string;
@@ -51,6 +61,9 @@ export async function POST(req: Request) {
     ownerPhone?: string | null;
     autoSend?: boolean;
     enabled?: boolean;
+    legalName?: string;
+    gstin?: string;
+    address?: string;
   };
 
   if (body.action === 'save_notify') {
@@ -71,6 +84,35 @@ export async function POST(req: Request) {
 
   if (body.action === 'set_policy' && body.actionType && body.decision) {
     await setPolicy(s.orgId, body.actionType, body.decision);
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === 'save_profile') {
+    // company profile: legal name, GSTIN (unlocks e-invoice/EWB), address.
+    // Empty GSTIN/address = leave unchanged, so partial saves are safe.
+    const gstin = (body.gstin ?? '').trim().toUpperCase();
+    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+      return Response.json(
+        { error: 'That GSTIN does not look right — expected 15 characters like 29ABCDE1234F1Z5.' },
+        { status: 400 }
+      );
+    }
+    const legalName = body.legalName?.trim();
+    if (legalName) {
+      await query('update organizations set name = $2 where id = $1', [s.orgId, legalName]);
+    }
+    const patch: Record<string, string> = {};
+    if (gstin) patch.gstin = gstin;
+    if (body.address?.trim()) patch.address = body.address.trim();
+    if (Object.keys(patch).length) {
+      await query(
+        `update organizations set settings = coalesce(settings,'{}'::jsonb) || $2::jsonb where id = $1`,
+        [s.orgId, JSON.stringify(patch)]
+      );
+    }
+    await audit(s.orgId, `user:${s.userName}`, 'settings.profile', {
+      metadata: { name: Boolean(legalName), gstin_set: Boolean(gstin), address_set: Boolean(body.address?.trim()) },
+    });
     return Response.json({ ok: true });
   }
 

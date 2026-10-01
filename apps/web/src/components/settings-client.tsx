@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { CheckIcon, SparklesIcon, MessageCircleIcon, CalendarClockIcon, ShieldCheckIcon, BrainIcon } from 'lucide-react';
+import { CheckIcon, SparklesIcon, MessageCircleIcon, CalendarClockIcon, ShieldCheckIcon, BrainIcon, BuildingIcon } from 'lucide-react';
 
 interface PolicyRow { action_type: string; decision: 'auto' | 'ask' | 'deny' }
 interface FactRow { id: string; fact: string; status: string; source: string }
@@ -60,6 +60,8 @@ export function SettingsClient() {
   const [notifyMsg, setNotifyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [jobs, setJobs] = useState<AgentJobRow[]>([]);
   const [isSignedIn, setIsSignedIn] = useState(false);
+  const [profile, setProfile] = useState<{ name: string; gstin: string; address: string } | null>(null);
+  const [profileMsg, setProfileMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [jobSchedule, setJobSchedule] = useState('daily');
   const [jobInstruction, setJobInstruction] = useState('');
   const [jobMsg, setJobMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -68,6 +70,9 @@ export function SettingsClient() {
     const s = await fetch('/api/settings').then((r) => r.json());
     setPolicies(s.policies ?? []);
     setFacts(s.facts ?? []);
+    if (s.profile) {
+      setProfile({ name: s.profile.name ?? '', gstin: s.profile.gstin ?? '', address: s.profile.address ?? '' });
+    }
     if (s.ai) {
       setAi(s.ai);
       setSelectedRoute(s.ai.model_route ?? 'default');
@@ -206,6 +211,27 @@ export function SettingsClient() {
     await load();
   };
 
+  const saveProfile = async () => {
+    if (!profile) return;
+    setProfileMsg(null);
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save_profile',
+        legalName: profile.name,
+        gstin: profile.gstin,
+        address: profile.address,
+      }),
+    });
+    const d = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    setProfileMsg(
+      res.ok && d.ok
+        ? { ok: true, text: 'Saved — e-invoicing checks your GSTIN from here.' }
+        : { ok: false, text: d.error ?? 'Could not save' }
+    );
+    await load();
+  };
+
   const switchOrg = async (slug: string) => {
     await fetch('/api/org', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -228,6 +254,58 @@ export function SettingsClient() {
         <h1 className="text-lg font-semibold">Settings</h1>
         <p className="text-xs text-muted-foreground">Your AI assistant, WhatsApp delivery and guardrails. Nothing technical required.</p>
       </div>
+
+      {/* Company profile */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm"><BuildingIcon className="h-4 w-4 text-sky-600" /> Company profile</CardTitle>
+          <CardDescription>Legal name, GSTIN and address — the GSTIN unlocks e-invoices (IRN) and e-way bills on dispatch.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="profile-name">Factory / legal name</label>
+              <Input
+                id="profile-name"
+                value={profile?.name ?? ''}
+                onChange={(e) => setProfile((p) => (p ? { ...p, name: e.target.value } : p))}
+                placeholder="Sharma Metal Works Pvt Ltd"
+                className="text-xs"
+                autoComplete="organization"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="profile-gstin">GSTIN (15 characters)</label>
+              <Input
+                id="profile-gstin"
+                value={profile?.gstin ?? ''}
+                onChange={(e) => setProfile((p) => (p ? { ...p, gstin: e.target.value.toUpperCase() } : p))}
+                placeholder="29ABCDE1234F1Z5"
+                className="font-mono text-xs uppercase"
+                maxLength={15}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="profile-address">Registered address</label>
+            <Input
+              id="profile-address"
+              value={profile?.address ?? ''}
+              onChange={(e) => setProfile((p) => (p ? { ...p, address: e.target.value } : p))}
+              placeholder="Plot 14, Peenya Industrial Area, Bengaluru 560058, Karnataka"
+              className="text-xs"
+            />
+          </div>
+          {profileMsg && <p className={`text-xs ${profileMsg.ok ? 'text-emerald-600' : 'text-destructive'}`}>{profileMsg.text}</p>}
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={saveProfile} disabled={!profile}>Save profile</Button>
+            {profile?.gstin && /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(profile.gstin) && (
+              <Badge variant="success"><CheckIcon className="mr-1 inline h-3 w-3" />GSTIN looks valid</Badge>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* AI model — included; subscriber only picks a style */}
       <Card>

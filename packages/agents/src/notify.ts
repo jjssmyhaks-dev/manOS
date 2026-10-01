@@ -237,6 +237,61 @@ export async function notifyOwnerDirect(orgId: string, body: string, template: s
   );
 }
 
+/**
+ * Deliver the weekly pilot feedback digest to the OPERATOR (us, not the
+ * owner). WhatsApp to OPERATOR_WHATSAPP when WhatsApp is live (or echoed in
+ * dev, template 'pilot_digest'), plus email to OPERATOR_EMAIL via Resend
+ * when RESEND_API_KEY is set. Channels are best-effort — one failing must
+ * not block the other or the cron.
+ */
+export async function deliverPilotDigest(operatorText: string): Promise<{ whatsapp: 'sent' | 'echoed' | 'skipped' | 'failed'; email: 'sent' | 'skipped' | 'failed'; error?: string }> {
+  const out: { whatsapp: 'sent' | 'echoed' | 'skipped' | 'failed'; email: 'sent' | 'skipped' | 'failed'; error?: string } = {
+    whatsapp: 'skipped',
+    email: 'skipped',
+  };
+  const cfg = whatsappEnvConfig();
+  const toOperator = process.env.OPERATOR_WHATSAPP?.replace(/[^0-9]/g, '');
+
+  if (toOperator) {
+    try {
+      if (cfg.echo) {
+        out.whatsapp = 'echoed';
+      } else if (cfg.token && cfg.phoneNumberId) {
+        const res = await sendWhatsAppText({ token: cfg.token, phoneNumberId: cfg.phoneNumberId, graphVersion: cfg.graphVersion }, toOperator, operatorText);
+        out.whatsapp = res.ok ? 'sent' : 'failed';
+        if (!res.ok) out.error = res.detail ?? res.error;
+      }
+    } catch (e) {
+      out.whatsapp = 'failed';
+      out.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const emailTo = process.env.OPERATOR_EMAIL;
+  const resendKey = process.env.RESEND_API_KEY;
+  if (emailTo && resendKey) {
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${resendKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          from: process.env.OPERATOR_EMAIL_FROM ?? 'Factory AI OS <pilot@factoryaios.in>',
+          to: emailTo,
+          subject: `Pilot feedback digest — week of ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+          text: operatorText.replace(/\*/g, ''), // strip WhatsApp bold markers
+        }),
+      });
+      out.email = res.ok ? 'sent' : 'failed';
+      if (!res.ok) out.error = `resend ${res.status}`;
+    } catch (e) {
+      out.email = 'failed';
+      out.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  return out;
+}
+
 export interface DecideFromWhatsAppResult {
   ok: boolean;
   reply: string;

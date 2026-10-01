@@ -28,7 +28,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Eval suite (11 golden cases)
+      - name: Eval suite (13 golden cases)
         run: npm test -w packages/evals
 
       - name: Production build

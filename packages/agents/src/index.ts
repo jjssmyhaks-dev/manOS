@@ -4,7 +4,7 @@ export * from './orchestrator.js';
 export { extractDocument, extractDocumentFromImage, acceptDocument, ExtractedPoSchema, validateExtraction } from './extraction.js';
 export type { ExtractedPo, ExtractionResult } from './extraction.js';
 export { generateDigest } from './digest.js';
-export { dispatchQueuedNotifications, getNotifySettings, saveNotifySettings, MAX_ATTEMPTS, parseApprovalCommand, decideApprovalFromWhatsApp, approvalShortCode, pendingListMessage, resolveApprovalByCode, notifyOwnerDirect } from './notify.js';
+export { dispatchQueuedNotifications, getNotifySettings, saveNotifySettings, MAX_ATTEMPTS, parseApprovalCommand, decideApprovalFromWhatsApp, approvalShortCode, pendingListMessage, resolveApprovalByCode, notifyOwnerDirect, deliverPilotDigest } from './notify.js';
 export type { DispatchOutcome, NotifySettings, ApprovalCommand, DecideFromWhatsAppResult } from './notify.js';
 export { scanAnomalies, anomalyLines, scanPriceVariance, scanDuplicateInvoices, scanReceivablesSpike, PRICE_VARIANCE_THRESHOLD, RECEIVABLES_SPIKE_PCT } from './anomalies.js';
 export type { Anomaly, AnomalyReport, AnomalySeverity } from './anomalies.js';

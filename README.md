@@ -32,7 +32,8 @@ ChainOfThought, Actions/Confirmation, Artifact and BranchPicker (`apps/web/src/c
 | — | WhatsApp as the product: inbound questions answered by the agent, approvals decided from the phone, voice notes via Sarvam STT | `apps/web/src/app/api/webhooks/whatsapp`, `packages/agents/src/notify.ts` |
 | — | Closed-loop remediation: anomaly → drafted fix (reminder / RFQ / credit note) → approval → execution → WhatsApp outcome | `packages/agents/src/remediation.ts` |
 | — | Conversational BI: `ask_data` group/aggregate over entity tables, rendered as inline charts in chat | `packages/agents/src/tools/read.ts`, `apps/web/src/components/ai-elements/chart.tsx` |
-| — | Weekly pilot feedback digest: usage, override trend, correction themes → operator (case-study raw material) | `packages/agents/src/pilot-digest.ts`, `/api/jobs/pilot-digest` |
+| — | Weekly pilot feedback digest: usage, override trend, correction themes → operator (case-study raw material), delivered to WhatsApp/email | `packages/agents/src/pilot-digest.ts`, `/api/jobs/pilot-digest` |
+| — | Operator pilot cockpit: every workspace's onboarding progress, override trend and latest digest side by side | `/pilot` |
 | — | Learning memory: corrections become reviewable org facts, applied in answers *and enforced in drafts* (price-floor guard on POs/SOs) | `packages/agents/src/memory.ts`, `remember` tool, `priceRulesFromFacts` |
 | — | Proactive anomaly agent: price variance, duplicate invoices (→ credit-note drafts), receivables spike; fixes reported to WhatsApp on decision | `packages/agents/src/anomalies.ts`, `packages/agents/src/remediation.ts` |
 | — | Demand forecast + BOM MRP buy suggestions (4-week horizon) | `packages/agents/src/mrp.ts`, `/procurement`, `run_mrp` agent tool |
@@ -105,7 +106,7 @@ packages/
 ```bash
 npm install
 npm run dev          # apps/web on http://localhost:3100
-npm test             # eval suite (11 golden cases) via tsx
+npm test             # eval suite (13 golden cases) via tsx
 npm run build        # production build of apps/web
 ```
 
@@ -136,6 +137,7 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 | `DATABASE_URL` | Remote Postgres (Neon / Supabase) — pgvector migration auto-applies |
 | `CRON_SECRET` | Bearer guard for the daily cron (`/api/jobs/daily`) |
 | `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API outbound. Without them sends run in echo mode — recorded and audited but not delivered (dev default). Set the owner number under **Settings → WhatsApp delivery**. |
+| `OPERATOR_WHATSAPP` / `OPERATOR_EMAIL` + `RESEND_API_KEY` | Platform-side only: where the **weekly pilot feedback digest** is delivered (WhatsApp needs the WhatsApp vars above; email via Resend). Without them the digest stays queued (`pilot_digest` template) and visible on `/pilot`. |
 
 ## Eval suite
 
@@ -148,6 +150,8 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 - **einvoicing** ×1 — IRN generation via the GSP sandbox, persistence, idempotent re-generation
 - **ewb_validation** ×1 — EWB rejects garbage vehicle/pincodes, requires IRN first, generates valid
 - **override_rate** ×1 — week bucketing + override % arithmetic, trend classification (the PRD exit metric)
+- **weighbridge_flow** ×1 — text parse → shadow draft → owner approval → purchase entry + inward scrap ledger
+- **remediation_pipeline** ×1 — duplicate-invoice anomaly → credit-note draft (right fix) → approval → executed + audited
 
 ## PRD v2 wedge (trust-and-voice strategy)
 

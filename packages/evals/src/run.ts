@@ -7,6 +7,8 @@ import {
   type EinvoiceCase,
   type EwbCase,
   type OverrideRateCase,
+  type WeighbridgeCase,
+  type RemediationCase,
 } from './cases.js';
 
 /**
@@ -321,6 +323,163 @@ async function runOverrideRate(c: OverrideRateCase): Promise<Result> {
   };
 }
 
+// --- pilot readiness: scrap weighbridge flow (F8) ------------------------------
+
+async function runWeighbridge(c: WeighbridgeCase): Promise<Result> {
+  const { initDb, seedDemoData, query, insertEntity } = await import('@factory/db');
+  const { extractWeighbridgeFromText, processWeighbridgeTicket } = await import('@factory/agents');
+  const { decideApproval } = await import('@factory/core');
+  await initDb();
+  const { orgId } = await seedDemoData('greencycle-recyclers'); // scrap vertical
+  const issues: string[] = [];
+
+  // 1. deterministic text extraction
+  const t = extractWeighbridgeFromText('gross 5420 tare 1220 grade MS solid from Ramesh ticket WB-7723');
+  if (t.netKg !== 4200) issues.push(`net ${t.netKg} != 4200 (gross-tare)`);
+  if (t.sellerName !== 'Ramesh') issues.push(`seller ${t.sellerName} != Ramesh`);
+  if (t.ticketNo !== 'WB-7723') issues.push(`ticketNo ${t.ticketNo} != WB-7723`);
+
+  // 2. rate card: a scrap item carrying data.grade + stdRate
+  const card = await insertEntity({
+    orgId, type: 'item', name: 'MS Solid Scrap', status: 'active', source: 'seed',
+    data: { grade: 'MS-solid', uom: 'kg', stdRate: 18 },
+  });
+  const gradeRate = await query<{ rate: string | null }>(
+    `select data->>'stdRate' as rate from entities where id = $1`,
+    [card.id]
+  );
+  if (gradeRate[0]?.rate !== '18') issues.push('rate card stdRate not stored');
+
+  // 3. intake drafts through the policy engine (shadow mode ON = ask)
+  const { setShadowMode } = await import('@factory/core');
+  await setShadowMode(orgId, true);
+  const intake = await processWeighbridgeTicket(orgId, t, { via: 'whatsapp-text', from: '919812345678' });
+  if (intake.ticket.netKg !== 4200) issues.push(`ticket net ${intake.ticket.netKg} != 4200`);
+  if (!intake.reply.replace(/,/g, '').includes('4200')) issues.push(`reply missing net weight: ${intake.reply.slice(0, 80)}`);
+  if (intake.decision !== 'ask') {
+    issues.push(`expected decision ask in shadow mode, got ${intake.decision}`);
+  } else if (!intake.approvalId) {
+    issues.push('shadow draft produced no approvalId');
+  }
+
+  // 4. owner approves → entry + inward stock movement recorded
+  let approved = false;
+  if (intake.approvalId) {
+    const res = await decideApproval(intake.approvalId, 'approve', 'eval-owner', (pl) =>
+      import('@factory/agents').then(({ executeAction }) => executeAction(orgId, 'weighbridge_entry', pl as Record<string, unknown>))
+    );
+    approved = (res as { status?: string }).status === 'executed';
+    if (!approved) issues.push(`approval did not execute: ${JSON.stringify(res).slice(0, 120)}`);
+  }
+  const entry = await query<{ id: string; qty: string; data: Record<string, unknown> }>(
+    `select id, qty, data from entities where org_id=$1 and type='purchase_entry' and data->>'ticketNo'='WB-7723' order by created_at desc limit 1`,
+    [orgId]
+  );
+  if (!entry[0]) {
+    issues.push('purchase entry not recorded after approval');
+  } else if (Number(entry[0].qty) !== 4200) {
+    issues.push(`entry qty ${entry[0].qty} != 4200`);
+  }
+  const ledger = await query<{ c: string }>(
+    `select count(*) as c from entities where org_id=$1 and type='stock_ledger' and data->>'kind'='inward_scrap' and data->>'grade' ilike '%MS%'`,
+    [orgId]
+  );
+  if (approved && Number(ledger[0]?.c ?? 0) < 1) issues.push('inward scrap stock movement missing');
+
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail: issues.join('; ') || `4200kg drafted→approved→ledger (+${ledger[0]?.c ?? 0} inward)`,
+  };
+}
+
+// --- pilot readiness: closed-loop remediation ----------------------------------
+
+async function runRemediation(c: RemediationCase): Promise<Result> {
+  const { initDb, seedDemoData, query } = await import('@factory/db');
+  const { scanAnomalies, proposeTopRemediation, proposeRemediation, executeAction } = await import('@factory/agents');
+  const { decideApproval } = await import('@factory/core');
+  await initDb();
+  // dedicated org: anomaly medians on precision-metalworks shift with the
+  // einvoicing/ewb cases; texstyle gives deterministic fixtures
+  const { orgId } = await seedDemoData('texstyle-exports');
+  const issues: string[] = [];
+
+  // fixture: two identical invoices for the same customer 1 day apart
+  const party = (
+    await query<{ id: string; name: string | null }>(
+      `select id, coalesce(name, data->>'name') as name from entities
+       where org_id=$1 and type='party' and coalesce(data->>'kind','customer')='customer' limit 1`,
+      [orgId]
+    )
+  )[0];
+  if (!party) throw new Error('no customer party in seed');
+  await query(
+    `insert into entities (id, org_id, type, code, status, party_id, amount, qty, rate, date, source, data)
+     values (gen_random_uuid()::text, $1,'invoice','EVAL-DUP-1','sent',$2,50000,10,5000,current_date - 2,'seed','{}'::jsonb),
+            (gen_random_uuid()::text, $1,'invoice','EVAL-DUP-2','sent',$2,50000,10,5000,current_date - 1,'seed','{}'::jsonb)`,
+    [orgId, party.id]
+  );
+
+  // 1. the duplicate fires as a HIGH anomaly
+  const report = await scanAnomalies(orgId);
+  const dupe = report.anomalies.find((a) => a.kind === 'duplicate_invoice' && a.title.includes('EVAL-DUP-1'));
+  if (!dupe) issues.push(`duplicate anomaly not detected (got ${report.anomalies.map((a) => a.kind).join(',')})`);
+  else if (dupe.severity !== 'high') issues.push(`duplicate severity ${dupe.severity} != high`);
+
+  // 2. the duplicate maps to the right fix — a credit-note draft, not a reminder
+  const dupeProposal = dupe ? await proposeRemediation(orgId, dupe) : null;
+  if (!dupeProposal || dupeProposal.actionType !== 'credit_note_draft') {
+    issues.push(`duplicate remediation ${dupeProposal?.actionType ?? 'null'} != credit_note_draft`);
+  }
+
+  // 3. the pipeline end to end: the engine's worst finding becomes a concrete
+  // draft through the policy engine (which anomaly wins depends on the seed's
+  // receivables history — the pipeline shape is what's under test here)
+  const outcome = await proposeTopRemediation(orgId);
+  if (outcome.decision === 'skipped') {
+    issues.push(`remediation skipped: ${outcome.reason}`);
+  } else if (outcome.decision !== 'ask') {
+    issues.push(`expected ask (shadow on), got ${outcome.decision}`);
+  } else if (!outcome.approvalId || !outcome.proposal) {
+    issues.push('proposal queued without approvalId/proposal');
+  }
+
+  // 4. owner approves → the drafted action executes for real
+  let executed = false;
+  if (outcome.approvalId && outcome.proposal) {
+    const res = await decideApproval(outcome.approvalId, 'approve', 'eval-owner', (pl) =>
+      executeAction(orgId, outcome.proposal!.actionType, pl as Record<string, unknown>)
+    );
+    executed = (res as { status?: string }).status === 'executed';
+    if (!executed) issues.push(`approval did not execute: ${JSON.stringify(res).slice(0, 120)}`);
+  }
+  if (executed && outcome.proposal?.actionType === 'credit_note_draft') {
+    const cn = await query<{ c: string }>(
+      `select count(*) as c from entities where org_id=$1 and type='credit_note' and data->>'againstInvoice'='EVAL-DUP-1'`,
+      [orgId]
+    );
+    if (Number(cn[0]?.c ?? 0) < 1) issues.push('credit note entity missing after execution');
+  }
+
+  // 5. the loop closes in the audit trail
+  const audited = await query<{ c: string }>(
+    `select count(*) as c from audit_log where org_id=$1 and action='remediation.proposed'`,
+    [orgId]
+  );
+  if (Number(audited[0]?.c ?? 0) < 1) issues.push('remediation.proposed audit entry missing');
+
+  return {
+    name: c.name,
+    kind: c.kind,
+    pass: issues.length === 0,
+    detail:
+      issues.join('; ') ||
+      `dupes→credit_note_draft ✓ · pipeline ${outcome.proposal?.actionType}→${outcome.decision}${executed ? '→executed' : ''}`,
+  };
+}
+
 async function main() {
   console.log('Factory AI OS — eval suite');
   const results: Result[] = [];
@@ -333,6 +492,8 @@ async function main() {
       else if (c.kind === 'einvoicing') results.push(await runEinvoice(c));
       else if (c.kind === 'ewb_validation') results.push(await runEwb(c));
       else if (c.kind === 'override_rate') results.push(await runOverrideRate(c));
+      else if (c.kind === 'weighbridge_flow') results.push(await runWeighbridge(c));
+      else if (c.kind === 'remediation_pipeline') results.push(await runRemediation(c));
     } catch (e) {
       results.push({ name: c.name, kind: c.kind, pass: false, detail: `threw: ${e instanceof Error ? e.message : String(e)}` });
     }

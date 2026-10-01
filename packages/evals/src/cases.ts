@@ -56,7 +56,26 @@ export interface OverrideRateCase {
   expectLastWeekPct: number;
 }
 
-export type EvalCase = ExtractionCase | MetricCase | GuardrailCase | ShadowModeCase | EinvoiceCase | EwbCase | OverrideRateCase;
+export interface WeighbridgeCase {
+  kind: 'weighbridge_flow';
+  name: string;
+}
+
+export interface RemediationCase {
+  kind: 'remediation_pipeline';
+  name: string;
+}
+
+export type EvalCase =
+  | ExtractionCase
+  | MetricCase
+  | GuardrailCase
+  | ShadowModeCase
+  | EinvoiceCase
+  | EwbCase
+  | OverrideRateCase
+  | WeighbridgeCase
+  | RemediationCase;
 
 export const GOLDEN_CASES: EvalCase[] = [
   // --- extraction -----------------------------------------------------------
@@ -135,5 +154,15 @@ Total: 12000`,
     kind: 'override_rate',
     name: 'override-rate-week-arithmetic',
     expectLastWeekPct: 33.3,
+  },
+  // --- pilot readiness: scrap weighbridge flow (F8) --------------------------
+  {
+    kind: 'weighbridge_flow',
+    name: 'weighbridge-intake-approve-to-ledger',
+  },
+  // --- pilot readiness: closed-loop remediation ------------------------------
+  {
+    kind: 'remediation_pipeline',
+    name: 'anomaly-to-draft-to-executed',
   },
 ];
