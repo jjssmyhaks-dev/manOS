@@ -38,7 +38,7 @@ export async function overrideRateReport(orgId: string, weeks = 6): Promise<Over
      )
      select to_char(wk.week_start, 'YYYY-MM-DD') as week_start,
             (select count(*) from agent_actions a
-              where a.org_id = $1 and a.status = 'executed'
+              where a.org_id = $1 and a.status = 'executed' and a.actor != 'gateway'
                 and a.created_at >= wk.week_start and a.created_at < wk.week_start + 7) as executed,
             (select count(*) from agent_actions a
               where a.org_id = $1 and a.status = 'undone'

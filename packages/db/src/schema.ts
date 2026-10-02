@@ -452,5 +452,34 @@ create table if not exists forecast_snapshots (
   created_at timestamptz not null default now()
 );
 create index if not exists forecast_snap_idx on forecast_snapshots (org_id, item_id, week_start desc);
+
+-- Alert lifecycle: maintenance acknowledges and resolves sensor anomalies
+-- from the dashboard; every transition is also on the audit trail. One row
+-- per alert (status transitions live in audit_log); agent_actions.status
+-- becomes 'closed' on resolution.
+create table if not exists telemetry_alert_acks (
+  alert_id uuid primary key,
+  org_id uuid not null,
+  status text not null default 'acked', -- acked | resolved
+  by_user text,
+  note text,
+  created_at timestamptz not null default now()
+);
+
+-- Nightly trajectory snapshots (override rate, forecast accuracy, anomaly
+-- counts) so digests show direction over weeks, not just today's value.
+-- Idempotent per org+day (nightly cron re-runs overwrite same-day rows).
+create table if not exists trend_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null,
+  day date not null default current_date,
+  override_pct numeric,
+  forecast_accuracy_pct numeric,
+  anomalies_open integer not null default 0,
+  actions_7d integer not null default 0,
+  created_at timestamptz not null default now(),
+  unique (org_id, day)
+);
+create index if not exists trend_snap_idx on trend_snapshots (org_id, day desc);
 `.trim();
 }

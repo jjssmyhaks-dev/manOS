@@ -291,6 +291,50 @@ export async function seedDemoData(
   }
   counts.machines = 5;
 
+  // P2b demo telemetry: a week of readings per machine+metric around the
+  // declared baselines, plus one vivid anomaly (CNC-2 vibration spike two
+  // nights ago) so the dashboard Machine-health card opens with a real
+  // story — a live-looking open alert to ack/resolve, not an empty state.
+  await query(`delete from machine_telemetry where org_id=$1 and source='seed'`, [orgId], db);
+  await query(`delete from agent_actions where org_id=$1 and action_type='telemetry_anomaly' and actor='gateway' and metadata->>'seed'='1'`, [orgId], db);
+  const metrics: Array<{ metric: string; base: number; jitter: number; unit: string }> = [
+    { metric: 'vibration', base: 2.2, jitter: 0.35, unit: 'mm/s' },
+    { metric: 'temperature', base: 68, jitter: 5, unit: '°C' },
+    { metric: 'current', base: 12, jitter: 1.5, unit: 'A' },
+  ];
+  const machineCodes = ['CNC-1', 'CNC-2', 'Press-1', 'Assembly-1', 'Packing-1'];
+  const anomalySummary = `⚠️ CNC-2: vibration 4.6mm/s — Above baseline 2.2 by 109.1% (threshold 25%)`;
+  for (let day = 6; day >= 0; day--) {
+    for (const m of machineCodes) {
+      for (const spec of metrics) {
+        const isAnomaly = m === 'CNC-2' && spec.metric === 'vibration' && day === 2;
+        const value = isAnomaly ? 4.6 : Math.round((spec.base + (rnd() - 0.5) * 2 * spec.jitter) * 10) / 10;
+        await query(
+          `insert into machine_telemetry (org_id, machine_code, metric, value, unit, recorded_at, source)
+           values ($1,$2,$3,$4,$5, now() - ($6 || ' days')::interval - ($7 || ' hours')::interval, 'seed')`,
+          [orgId, m, spec.metric, value, spec.unit, String(day), String(Math.floor(rnd() * 10))]
+        );
+        if (isAnomaly) {
+          await query(
+            `insert into agent_actions (org_id, actor, action_type, entity_type, summary, reason, sources, status, metadata)
+             values ($1,'gateway','telemetry_anomaly','machine',$2,'Sensor reading deviates from the machine baseline; routed to maintenance at higher urgency than routine PM',
+                     '[{\"type\":\"machine\",\"label\":\"Machine CNC-2 (vibration sensor)\"}]'::jsonb,'executed',
+                     jsonb_build_object('machine','CNC-2','metric','vibration','value',4.6,'deviationPct',109.1,'baseline',2.2,'seed','1'))`,
+            [orgId, anomalySummary],
+            db
+          );
+        }
+      }
+    }
+  }
+  await query(
+    `insert into telemetry_baselines (org_id, machine_code, metric, baseline, threshold_pct)
+     values ($1,'CNC-2','vibration',2.2,25) on conflict (org_id, machine_code, metric) do nothing`,
+    [orgId],
+    db
+  );
+  counts.telemetryReadings = 7 * 5 * 3 + 1;
+
   // BOMs: first two finished items consume two components each (qty per unit)
   // so the MRP engine can explode parent demand into component buy suggestions
   for (let p = 0; p < 2; p++) {

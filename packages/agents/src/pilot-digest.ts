@@ -1,4 +1,4 @@
-import { query } from '@factory/db';
+import { query, audit } from '@factory/db';
 import { overrideRateReport } from './override-rate.js';
 import { forecastAccuracySummary, type ForecastAccuracySummary } from './forecast.js';
 
@@ -227,6 +227,100 @@ export async function generatePilotDigest(orgId: string, orgName?: string, verti
     topCorrectionThemes,
     narrative,
   };
+}
+
+// --- Nightly trajectory snapshots (direction over time, not just today) ----
+
+export interface TrendSnapshotRow {
+  day: string;
+  overridePct: number | null;
+  forecastAccuracyPct: number | null;
+  anomaliesOpen: number;
+  actions7d: number;
+}
+
+/**
+ * Record today's trajectory row (override rate, forecast accuracy, open
+ * anomalies, actions). Called by the nightly cron — idempotent per org+day
+ * (a re-run overwrites the same-day row), never throws into the cron.
+ */
+export async function recordTrendSnapshot(orgId: string): Promise<void> {
+  try {
+    const [override, acc, counts] = await Promise.all([
+      overrideRateReport(orgId, 6).catch(() => ({ lastWeek: undefined as { overrideRatePct: number } | undefined })),
+      forecastAccuracySummary(orgId, 1).catch(() => ({ averagePct: null as number | null })),
+      query<{ open: string; actions: string }>(
+        `select
+           (select count(*) from agent_actions
+             where org_id=$1 and action_type='telemetry_anomaly'
+               and not exists (select 1 from telemetry_alert_acks s where s.alert_id = agent_actions.id and s.status='resolved')) as open,
+           (select count(*) from agent_actions where org_id=$1 and created_at >= now() - interval '7 days') as actions`,
+        [orgId]
+      ),
+    ]);
+    const vals = [
+      override.lastWeek?.overrideRatePct ?? null,
+      acc.averagePct,
+      Number(counts[0]?.open ?? 0),
+      Number(counts[0]?.actions ?? 0),
+    ];
+    await query(
+      `insert into trend_snapshots (org_id, day, override_pct, forecast_accuracy_pct, anomalies_open, actions_7d)
+       values ($1, current_date, $2, $3, $4, $5)
+       on conflict (org_id, day) do update set override_pct = $2, forecast_accuracy_pct = $3,
+         anomalies_open = $4, actions_7d = $5, created_at = now()`,
+      [orgId, ...vals]
+    );
+    // trajectory rows feed owner-facing digests — they belong on the audit trail
+    await audit(orgId, 'system', 'trend.snapshot', {
+      metadata: { overridePct: vals[0], forecastAccuracyPct: vals[1], anomaliesOpen: vals[2], actions7d: vals[3] },
+    });
+  } catch {
+    // trajectory recording must never break the nightly cron
+  }
+}
+
+/** Weekly trajectory from the snapshot table (direction arrows for the digest). */
+export async function trendTrajectory(orgId: string, weeks = 4): Promise<TrendSnapshotRow[]> {
+  const rows = await query<{ day: string; override_pct: string | null; forecast_accuracy_pct: string | null; anomalies_open: string; actions_7d: string }>(
+    `select to_char(day,'YYYY-MM-DD') as day, override_pct::text, forecast_accuracy_pct::text,
+            anomalies_open::text, actions_7d::text
+     from trend_snapshots where org_id=$1 order by day desc limit $2`,
+    [orgId, weeks * 7]
+  );
+  return rows.map((r) => ({
+    day: r.day,
+    overridePct: r.override_pct != null ? Number(r.override_pct) : null,
+    forecastAccuracyPct: r.forecast_accuracy_pct != null ? Number(r.forecast_accuracy_pct) : null,
+    anomaliesOpen: Number(r.anomalies_open),
+    actions7d: Number(r.actions_7d),
+  })).reverse();
+}
+
+function arrow(series: Array<number | null>): string {
+  const vals = series.filter((v): v is number => v != null);
+  if (vals.length < 2) return '→';
+  const first = vals[0]!;
+  const last = vals[vals.length - 1]!;
+  if (last > first + 0.5) return '↗';
+  if (last < first - 0.5) return '↘';
+  return '→';
+}
+
+/** One-line trajectory for the pilot digest text (e.g. "override 12→8% ↘"). */
+export function trendTrajectoryText(rows: TrendSnapshotRow[]): string {
+  if (rows.length < 2) return '';
+  const ov = rows.map((r) => r.overridePct);
+  const fa = rows.map((r) => r.forecastAccuracyPct);
+  const an = rows.map((r) => r.anomaliesOpen);
+  const ovStr = ov.filter((v) => v != null).length ? `${ov.find((v) => v != null)}→${ov.filter((v) => v != null).at(-1)}%` : null;
+  const faStr = fa.filter((v) => v != null).length ? `${fa.find((v) => v != null)}→${fa.filter((v) => v != null).at(-1)}%` : null;
+  const parts = [
+    ovStr ? `override ${ovStr} ${arrow(ov)}` : null,
+    faStr ? `forecast ${faStr} ${arrow(fa)}` : null,
+    `open anomalies ${an[0]}→${an[an.length - 1]} ${arrow(an)}`,
+  ].filter(Boolean);
+  return parts.length ? `📈 *Trajectory (from nightly snapshots):* ${parts.join(' · ')}` : '';
 }
 
 /** Digest for every org (weekly cron entry point). */

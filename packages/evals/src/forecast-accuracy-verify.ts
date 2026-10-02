@@ -12,6 +12,9 @@ import {
   forecastAccuracySummary,
   forecastAccuracyTrend,
   suggestReorderAdjustments,
+  recordTrendSnapshot,
+  trendTrajectory,
+  trendTrajectoryText,
   generateDigest,
   generatePilotDigest,
   pilotDigestText,
@@ -97,6 +100,15 @@ check(
   text.includes('*Biggest forecast misses:*') && (realItems[0]!.name ? text.includes(realItems[0]!.name!) : true),
   text.split('\n').find((l) => l.startsWith('• ')) ?? 'missing'
 );
+
+// trajectory snapshots: record → read → text (idempotent per org+day)
+await recordTrendSnapshot(orgId);
+const traj = await trendTrajectory(orgId);
+check('trend snapshot recorded', traj.length >= 1, JSON.stringify(traj));
+await recordTrendSnapshot(orgId); // same-day re-run must not duplicate
+const traj2 = await trendTrajectory(orgId);
+check('trend snapshot idempotent per day', traj2.length === traj.length, `rows=${traj2.length}`);
+check('trajectory text empty for a single day', trendTrajectoryText(traj2) === '', trendTrajectoryText(traj2));
 
 console.log(`\n${failures ? `FORECAST-ACCURACY VERIFY FAILED: ${failures} check(s)` : 'Forecast-accuracy surfaces verified.'}`);
 process.exit(failures ? 1 : 0);

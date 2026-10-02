@@ -197,6 +197,40 @@ export async function recentAnomalies(orgId: string, machineCode?: string, limit
   return rows.map((r) => ({ machine: r.machine, metric: r.metric, value: Number(r.value), deviationPct: Number(r.deviation ?? 0), at: r.at }));
 }
 
+// --- Alert lifecycle: acknowledge / resolve (maintenance closes the loop) ---
+
+/**
+ * Acknowledge or resolve an anomaly alert from the dashboard. Idempotent
+ * (re-acking keeps 'acked', re-resolving keeps 'resolved'), org-checked, and
+ * audit-trailed both in agent_actions.status and audit_log.
+ */
+export async function setAlertStatus(
+  orgId: string,
+  alertId: string,
+  status: 'acked' | 'resolved',
+  opts: { byUser?: string; note?: string } = {}
+): Promise<{ ok: boolean; error?: string }> {
+  const rows = await query<{ id: string; summary: string }>(
+    `select id, summary from agent_actions where org_id=$1 and id=$2 and action_type='telemetry_anomaly' limit 1`,
+    [orgId, alertId]
+  );
+  const alert = rows[0];
+  if (!alert) return { ok: false, error: 'alert not found' };
+  await query(
+    `insert into telemetry_alert_acks (alert_id, org_id, status, by_user, note) values ($1,$2,$3,$4,$5)
+     on conflict (alert_id) do update set status = $3, by_user = $4, note = $5, created_at = now()`,
+    [alertId, orgId, status, opts.byUser ?? null, opts.note ?? null]
+  );
+  await query(
+    `update agent_actions set status = $3 where org_id=$1 and id=$2`,
+    [orgId, alertId, status === 'resolved' ? 'closed' : 'executed']
+  );
+  await audit(orgId, 'user', status === 'resolved' ? 'telemetry.alert_resolved' : 'telemetry.alert_acked', {
+    metadata: { alert: alertId, by: opts.byUser ?? null, note: opts.note ?? null },
+  });
+  return { ok: true };
+}
+
 // --- Dashboard machine-health surface ---------------------------------------
 
 export interface MachineHealthRow {
@@ -215,9 +249,19 @@ export interface MachineHealthRow {
   lastAnomalyAt: string | null;
 }
 
+export interface AnomalyFeedRow {
+  id: string;
+  machine: string;
+  metric: string;
+  value: number;
+  deviationPct: number;
+  at: string;
+  status: 'open' | 'acked' | 'resolved';
+}
+
 export interface MachineHealthSnapshot {
   machines: MachineHealthRow[];
-  anomalies7d: Array<{ machine: string; metric: string; value: number; deviationPct: number; at: string }>;
+  anomalies7d: AnomalyFeedRow[];
   lastReadingAt: string | null;
 }
 
@@ -252,17 +296,29 @@ export async function machineHealthSnapshot(orgId: string): Promise<MachineHealt
     [orgId]
   );
 
-  const anomalyCounts = await query<{ machine: string; n: string; last_at: string | null }>(
-    `select metadata->>'machine' as machine, count(*)::text as n,
-            to_char(max(created_at), 'YYYY-MM-DD HH24:MI') as last_at
-     from agent_actions
-     where org_id=$1 and action_type='telemetry_anomaly' and created_at >= now() - interval '7 days'
-     group by metadata->>'machine'`,
-    [orgId]
+  // alert feed with lifecycle status: open (new), acked (maintenance has
+  // eyes on it), resolved (closed) — status lives in telemetry_alert_acks
+  const feed = await query<{
+    id: string; machine: string; metric: string; value: string; deviation: string; at: string; status: string | null;
+  }>(
+    `select a.id, a.metadata->>'machine' as machine, a.metadata->>'metric' as metric,
+            (a.metadata->>'value')::text as value, (a.metadata->>'deviationPct')::text as deviation,
+            to_char(a.created_at, 'YYYY-MM-DD HH24:MI') as at, s.status
+     from agent_actions a
+     left join telemetry_alert_acks s on s.alert_id = a.id
+     where a.org_id=$1 and a.action_type='telemetry_anomaly' and a.status != 'undone'
+     order by a.created_at desc limit $2`,
+    [orgId, 10]
   );
-  const countByMachine = new Map(anomalyCounts.map((r) => [r.machine, { n: Number(r.n), last: r.last_at }]));
-
-  const anomalies7d = await recentAnomalies(orgId, undefined, 10);
+  const anomalies7d: AnomalyFeedRow[] = feed.map((r) => ({
+    id: r.id,
+    machine: r.machine,
+    metric: r.metric,
+    value: Number(r.value),
+    deviationPct: Number(r.deviation ?? 0),
+    at: r.at,
+    status: r.status === 'resolved' ? 'resolved' : r.status === 'acked' ? 'acked' : 'open',
+  }));
   const lastReadingAt = readings.length
     ? readings.map((r) => r.last_at).sort().at(-1) ?? null
     : null;
@@ -295,8 +351,8 @@ export async function machineHealthSnapshot(orgId: string): Promise<MachineHealt
     return {
       machineCode: m.code,
       metrics,
-      anomalyCount7d: countByMachine.get(m.code)?.n ?? 0,
-      lastAnomalyAt: countByMachine.get(m.code)?.last ?? null,
+      anomalyCount7d: anomalies7d.filter((a) => a.machine === m.code && a.status === 'open').length,
+      lastAnomalyAt: anomalies7d.find((a) => a.machine === m.code)?.at ?? null,
     };
   });
 

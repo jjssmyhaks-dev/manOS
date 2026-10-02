@@ -15,6 +15,7 @@ import {
 } from '@factory/agents';
 import { connectorHealth } from '@factory/core';
 import { purgeExpiredSessions } from '@/lib/auth';
+import { recordTrendSnapshot } from '@factory/agents';
 import { query, audit } from '@factory/db';
 import { parseZohoConfig, ZohoBooksConnector, parseQboConfig, QuickBooksConnector, parseTallyServerConfig, tallySync } from '@factory/connectors';
 import { recordSyncHistory } from '@factory/core';
@@ -56,6 +57,7 @@ export async function POST(req: Request) {
   const results: Array<{ org: string; overdue: number; anomalies: number; remediation: string; collections: string; compliance: string; maintenance: string; forecast: string }> = [];
   const jobResults: AgentJobRunResult[] = [];
   for (const org of orgs) {
+    await recordTrendSnapshot(org.id); // trajectory snapshot (idempotent per day)
     const digest = await generateDigest(org.id);
     await query(
       `insert into notifications (org_id, channel, to_addr, template, body, status) values ($1,'whatsapp',$2,'daily_digest',$3,'queued')`,

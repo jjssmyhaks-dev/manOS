@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ShadowBanner } from '@/components/shadow-banner';
+import { CommandPalette } from '@/components/command-palette';
 import {
   MessageSquareText, LayoutDashboard, FileText, ShoppingCart, BellRing,
   CalendarClock, Plug, ScrollText, Settings, Factory, ActivityIcon,
@@ -40,6 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
+      <CommandPalette />
       <aside className="hidden w-56 shrink-0 border-r bg-card md:flex md:flex-col">
         <div className="flex items-center gap-2 px-4 py-4 border-b">
           <Factory className="h-6 w-6 text-primary" />
@@ -61,6 +63,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))}
+            className="mt-2 flex w-full items-center justify-between rounded-md border px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-muted"
+          >
+            <span>Search / ask anything…</span>
+            <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘K</kbd>
+          </button>
         </nav>
         {me ? (
           <div className="border-t p-3">

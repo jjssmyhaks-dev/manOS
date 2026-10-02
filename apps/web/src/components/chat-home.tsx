@@ -2,7 +2,8 @@
 
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   Conversation, ConversationEmptyState, Message, PromptInput, Suggestions, Sources,
 } from '@/components/ai-elements';
@@ -23,11 +24,23 @@ export function ChatHome() {
   });
 
   const [input, setInput] = useState('');
+  const params = useSearchParams();
 
   const send = (text: string) => {
     if (!text.trim()) return;
     sendMessage({ text });
   };
+
+  // Cmd+K "Ask the AI" deep link: /chat?q=… sends the question on arrival
+  useEffect(() => {
+    const q = params.get('q');
+    if (q?.trim()) {
+      send(q.trim());
+      setInput(q.trim());
+      window.history.replaceState(null, '', '/chat');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const busy = status === 'submitted' || status === 'streaming';
 

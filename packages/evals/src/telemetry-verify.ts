@@ -15,7 +15,15 @@ import './env.js';
  *   7. recentAnomalies() returns the durable history
  */
 import { query, seedDemoData } from '@factory/db';
-import { ingestReading, upsertBaseline, getBaseline, detectAnomaly, recentAnomalies } from '@factory/agents';
+import {
+  ingestReading,
+  upsertBaseline,
+  getBaseline,
+  detectAnomaly,
+  recentAnomalies,
+  machineHealthSnapshot,
+  setAlertStatus,
+} from '@factory/agents';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = '') {
@@ -80,6 +88,28 @@ check('telemetry_alert notification queued', Number(notes[0]?.n) === 1);
 // 7. durable history
 const hist = await recentAnomalies(orgId, 'CNC-1');
 check('recentAnomalies returns history', hist.length === 1 && hist[0]!.machine === 'CNC-1' && hist[0]!.metric === 'vibration', JSON.stringify(hist));
+
+// 8. dashboard snapshot: the CNC-1 alert is open, baseline rows present
+const snap = await machineHealthSnapshot(orgId);
+const feedRow = snap.anomalies7d.find((a) => a.machine === 'CNC-1');
+check('snapshot feed shows open alert', !!feedRow && feedRow.status === 'open', JSON.stringify(feedRow));
+const cnc1 = snap.machines.find((m) => m.machineCode === 'CNC-1');
+check('snapshot carries baseline + reading', !!cnc1 && cnc1.metrics.some((x) => x.baseline !== null && x.lastValue !== null), JSON.stringify(cnc1?.metrics));
+
+// 9. ack → resolve lifecycle (audit-trailed via setAlertStatus)
+const alertId = feedRow!.id;
+const ack = await setAlertStatus(orgId, alertId, 'acked');
+check('ack accepted', ack.ok, JSON.stringify(ack));
+const afterAck = (await machineHealthSnapshot(orgId)).anomalies7d.find((a) => a.id === alertId);
+check('ack reflected in feed', afterAck?.status === 'acked', `status=${afterAck?.status}`);
+const res = await setAlertStatus(orgId, alertId, 'resolved', { byUser: 'maintenance@factory.in', note: 'bearing replaced' });
+check('resolve accepted', res.ok, JSON.stringify(res));
+const afterRes = (await machineHealthSnapshot(orgId)).anomalies7d.find((a) => a.id === alertId);
+check('resolve reflected + no longer open', afterRes?.status === 'resolved', `status=${afterRes?.status}`);
+const closed = await query<{ st: string }>(`select status as st from agent_actions where id=$1`, [alertId]);
+check('agent_actions status closed', closed[0]?.st === 'closed', `status=${closed[0]?.st}`);
+const unknown = await setAlertStatus(orgId, '00000000-0000-0000-0000-000000000000', 'acked');
+check('unknown alert rejected', !unknown.ok && unknown.error === 'alert not found', JSON.stringify(unknown));
 
 console.log(`\n${failures ? `TELEMETRY VERIFY FAILED: ${failures} check(s)` : 'Telemetry P2b verified end-to-end.'}`);
 process.exit(failures ? 1 : 0);
