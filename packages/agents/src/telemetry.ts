@@ -196,3 +196,109 @@ export async function recentAnomalies(orgId: string, machineCode?: string, limit
   );
   return rows.map((r) => ({ machine: r.machine, metric: r.metric, value: Number(r.value), deviationPct: Number(r.deviation ?? 0), at: r.at }));
 }
+
+// --- Dashboard machine-health surface ---------------------------------------
+
+export interface MachineHealthRow {
+  machineCode: string;
+  metrics: Array<{
+    metric: string;
+    lastValue: number | null;
+    unit: string | null;
+    lastAt: string | null;
+    baseline: number | null;
+    thresholdPct: number | null;
+    deviationPct: number | null;
+    anomalous: boolean;
+  }>;
+  anomalyCount7d: number;
+  lastAnomalyAt: string | null;
+}
+
+export interface MachineHealthSnapshot {
+  machines: MachineHealthRow[];
+  anomalies7d: Array<{ machine: string; metric: string; value: number; deviationPct: number; at: string }>;
+  lastReadingAt: string | null;
+}
+
+/**
+ * Everything the dashboard machine-health card needs in one call: every
+ * machine in the master, its per-metric latest reading vs baseline (with
+ * live deviation), 7-day anomaly counts, and the shared 7-day anomaly feed.
+ * Computed in SQL + a pure % comparison — no model, deterministic.
+ */
+export async function machineHealthSnapshot(orgId: string): Promise<MachineHealthSnapshot> {
+  const machines = await query<{ code: string }>(
+    `select code from entities where org_id=$1 and type='machine' and code is not null order by code`,
+    [orgId]
+  );
+
+  const readings = await query<{
+    machine_code: string;
+    metric: string;
+    last_value: string;
+    unit: string | null;
+    last_at: string;
+  }>(
+    `select distinct on (machine_code, metric) machine_code, metric, value::text as last_value, unit,
+            to_char(recorded_at, 'YYYY-MM-DD HH24:MI') as last_at
+     from machine_telemetry where org_id=$1
+     order by machine_code, metric, recorded_at desc`,
+    [orgId]
+  );
+
+  const baselines = await query<{ machine_code: string; metric: string; baseline: string; threshold_pct: string }>(
+    `select machine_code, metric, baseline::text, threshold_pct::text from telemetry_baselines where org_id=$1`,
+    [orgId]
+  );
+
+  const anomalyCounts = await query<{ machine: string; n: string; last_at: string | null }>(
+    `select metadata->>'machine' as machine, count(*)::text as n,
+            to_char(max(created_at), 'YYYY-MM-DD HH24:MI') as last_at
+     from agent_actions
+     where org_id=$1 and action_type='telemetry_anomaly' and created_at >= now() - interval '7 days'
+     group by metadata->>'machine'`,
+    [orgId]
+  );
+  const countByMachine = new Map(anomalyCounts.map((r) => [r.machine, { n: Number(r.n), last: r.last_at }]));
+
+  const anomalies7d = await recentAnomalies(orgId, undefined, 10);
+  const lastReadingAt = readings.length
+    ? readings.map((r) => r.last_at).sort().at(-1) ?? null
+    : null;
+
+  const readMap = new Map<string, { value: number; unit: string | null; at: string }>();
+  for (const r of readings) readMap.set(`${r.machine_code}|${r.metric}`, { value: Number(r.last_value), unit: r.unit, at: r.last_at });
+  const baseMap = new Map<string, { baseline: number; thresholdPct: number }>();
+  for (const b of baselines) baseMap.set(`${b.machine_code}|${b.metric}`, { baseline: Number(b.baseline), thresholdPct: Number(b.threshold_pct) });
+
+  const out: MachineHealthRow[] = machines.map((m) => {
+    const metrics = [...readMap.keys(), ...baseMap.keys()]
+      .filter((k) => k.startsWith(`${m.code}|`))
+      .map((k) => k.split('|')[1]!)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .sort()
+      .map((metric) => {
+        const r = readMap.get(`${m.code}|${metric}`);
+        const b = baseMap.get(`${m.code}|${metric}`);
+        const deviationPct = r && b && b.baseline !== 0 ? Math.round(((r.value - b.baseline) / b.baseline) * 1000) / 10 : null;
+        return {
+          metric,
+          lastValue: r?.value ?? null,
+          unit: r?.unit ?? METRIC_UNITS[metric] ?? null,
+          lastAt: r?.at ?? null,
+          baseline: b?.baseline ?? null,
+          thresholdPct: b?.thresholdPct ?? null,
+          deviationPct,
+          anomalous: deviationPct !== null && b ? Math.abs(deviationPct) > b.thresholdPct : false,
+        };      });
+    return {
+      machineCode: m.code,
+      metrics,
+      anomalyCount7d: countByMachine.get(m.code)?.n ?? 0,
+      lastAnomalyAt: countByMachine.get(m.code)?.last ?? null,
+    };
+  });
+
+  return { machines: out, anomalies7d, lastReadingAt };
+}

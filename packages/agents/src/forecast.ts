@@ -27,7 +27,6 @@ export interface ReorderSuggestion {
   why: string;
   caution: string | null;
 }
-
 export interface ForecastAdjustmentReport {
   asOf: string;
   suggestions: ReorderSuggestion[];
@@ -50,6 +49,33 @@ export async function suggestReorderAdjustments(orgId: string, horizonWeeks = 4)
   const seasonal: string[] = [];
   const suggestions: ReorderSuggestion[] = [];
 
+  // self-correcting loop: measured per-item accuracy widens or tightens the
+  // safety buffer — misses get MORE stock cover, near-perfect forecasts get a
+  // leaner buffer (clamped 0.9–1.5 so it never guts the safety week; items
+  // without history keep the neutral 1.0)
+  const accuracy = new Map<string, number>();
+  try {
+    const hist = await scoreForecastAccuracy(orgId);
+    for (const r of hist.rows) accuracy.set(r.itemId, r.accuracyPct / 100);
+  } catch {
+    // no snapshots yet → every item keeps the default buffer
+  }
+  const bufferFor = (itemId: string): { factor: number; note: string | null } => {
+    const a = accuracy.get(itemId);
+    if (a === undefined) return { factor: 1, note: null };
+    const factor = a >= 0.9 ? 1 - (a - 0.9) : Math.min(1.5, 1 + (0.9 - a) * 2.5);
+    const pct = Math.round((factor - 1) * 100);
+    return {
+      factor,
+      note:
+        pct > 5
+          ? `accuracy ${Math.round(a * 100)}% → safety widened ${pct}%`
+          : pct < -2
+            ? `accuracy ${Math.round(a * 100)}% → safety tightened ${-pct}%`
+            : null,
+    };
+  };
+
   for (const f of forecast) {
     const weeks = f.history.length;
     const mean = f.history.reduce((s, v) => s + v, 0) / Math.max(1, weeks);
@@ -62,8 +88,10 @@ export async function suggestReorderAdjustments(orgId: string, horizonWeeks = 4)
     }
     if (cv > SEASONAL_CV) seasonal.push(`${f.item ?? f.itemId} — demand CV ${cv.toFixed(1)}; review with a seasonal view, suggestion is conservative`);
 
-    // suggested reorder point = projected horizon demand + one week of safety
-    const suggested = Math.max(1, Math.ceil(f.projectedUnits + f.weeklyAvg));
+    const buffer = bufferFor(f.itemId);
+    // suggested reorder point = projected horizon demand + one week of safety,
+    // scaled by the item's measured forecast accuracy
+    const suggested = Math.max(1, Math.ceil((f.projectedUnits + f.weeklyAvg) * buffer.factor));
     const cur = (
       await query<{ rop: string | null; soh: string | null }>(
         `select data->>'reorderPoint' as rop, data->>'stockOnHand' as soh from entities where id = $1`,
@@ -74,6 +102,7 @@ export async function suggestReorderAdjustments(orgId: string, horizonWeeks = 4)
     if (currentRop != null && Math.abs(currentRop - suggested) <= Math.max(1, Math.ceil(suggested * 0.1))) {
       continue; // within 10% — no churn
     }
+    const whyBase = `${f.weeklyAvg.toFixed(1)}/wk recent demand → ${f.projectedUnits} units over ${horizonWeeks}w; ROP = horizon + 1wk safety`;
     suggestions.push({
       itemId: f.itemId,
       item: f.item,
@@ -82,7 +111,7 @@ export async function suggestReorderAdjustments(orgId: string, horizonWeeks = 4)
       suggestedReorderPoint: suggested,
       weeklyAvg: Math.round(f.weeklyAvg * 10) / 10,
       projectedUnits: f.projectedUnits,
-      why: `${f.weeklyAvg.toFixed(1)}/wk recent demand → ${f.projectedUnits} units over ${horizonWeeks}w; ROP = horizon + 1wk safety`,
+      why: buffer.note ? `${whyBase}; ${buffer.note}` : whyBase,
       caution: cv > SEASONAL_CV ? 'demand is lumpy/seasonal — treat as a floor' : null,
     });
   }
@@ -229,6 +258,31 @@ export async function scoreForecastAccuracy(orgId: string, minAgeWeeks = 4): Pro
   }
   const averagePct = rows.length ? Math.round((rows.reduce((s, r) => s + r.accuracyPct, 0) / rows.length) * 10) / 10 : null;
   return { scored: rows.length, rows, averagePct };
+}
+
+export interface ForecastAccuracyWeekPoint {
+  weekStart: string;
+  averagePct: number;
+  scored: number;
+}
+
+/**
+ * Week-over-week accuracy series for the Settings trend chart: the same
+ * item-scoped scoring grouped by projection week. Zero rows when snapshots
+ * have not started scoring yet.
+ */
+export async function forecastAccuracyTrend(orgId: string): Promise<ForecastAccuracyWeekPoint[]> {
+  const report = await scoreForecastAccuracy(orgId);
+  const byWeek = new Map<string, { sum: number; n: number }>();
+  for (const r of report.rows) {
+    const cur = byWeek.get(r.weekStart) ?? { sum: 0, n: 0 };
+    cur.sum += r.accuracyPct;
+    cur.n += 1;
+    byWeek.set(r.weekStart, cur);
+  }
+  return [...byWeek.entries()]
+    .map(([weekStart, { sum, n }]) => ({ weekStart, averagePct: Math.round((sum / n) * 10) / 10, scored: n }))
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart));
 }
 
 /**

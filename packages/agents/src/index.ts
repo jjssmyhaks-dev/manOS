@@ -43,10 +43,10 @@ export { extractDefectFromPhoto, createInspectionRecord, draftNcr, executeCreate
 export type { Defect, InspectionInput, NcrDraftResult } from './quality.js';
 export { checkEinvoiceApplicability, runComplianceCheck, recordComplianceStatus, EINVOICE_THRESHOLD_INR } from './compliance.js';
 export type { Applicability, ComplianceOutcome, ComplianceRunReport } from './compliance.js';
-export { suggestReorderAdjustments, proposeReorderPointUpdates, executeUpdateReorderPoints, runForecastCycle, recordForecastSnapshots, scoreForecastAccuracy, forecastAccuracySummary } from './forecast.js';
-export type { ReorderSuggestion, ForecastAdjustmentReport, ForecastAccuracyRow, ForecastAccuracyReport, ForecastAccuracySummary } from './forecast.js';
-export { ingestReading, detectAnomaly, getBaseline, upsertBaseline, recentAnomalies, createMaintenanceAlert, METRIC_UNITS } from './telemetry.js';
-export type { TelemetryReading, TelemetryMetric, Baseline, AnomalyVerdict, IngestResult, MaintenanceAlertResult } from './telemetry.js';
+export { suggestReorderAdjustments, proposeReorderPointUpdates, executeUpdateReorderPoints, runForecastCycle, recordForecastSnapshots, scoreForecastAccuracy, forecastAccuracySummary, forecastAccuracyTrend } from './forecast.js';
+export type { ReorderSuggestion, ForecastAdjustmentReport, ForecastAccuracyRow, ForecastAccuracyReport, ForecastAccuracySummary, ForecastAccuracyWeekPoint } from './forecast.js';
+export { ingestReading, detectAnomaly, getBaseline, upsertBaseline, recentAnomalies, createMaintenanceAlert, machineHealthSnapshot, METRIC_UNITS } from './telemetry.js';
+export type { TelemetryReading, TelemetryMetric, Baseline, AnomalyVerdict, IngestResult, MaintenanceAlertResult, MachineHealthRow, MachineHealthSnapshot } from './telemetry.js';
 export { handleCustomerMessage, getCustomerOrders, createComplaintTicket, isAngryTone } from './customer-service.js';
 export type { CustomerOrderView, CustomerServiceResult, ComplaintTicketResult } from './customer-service.js';
 export { checkDueMaintenance, draftMaintenanceWorkOrders, executeCreateMaintenanceWo, PM_WARNING_WINDOW_DAYS } from './maintenance.js';

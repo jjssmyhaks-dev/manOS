@@ -1,5 +1,6 @@
 import { seedDemoData, SEED_ORGS } from '@factory/db';
 import { getSession, listDemoOrgs, ORG_COOKIE } from '@/lib/session';
+import { limit, clientKey } from '@/lib/rate-limit';
 import { cookies } from 'next/headers';
 
 export const runtime = 'nodejs';
@@ -16,6 +17,9 @@ export async function GET() {
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { action: 'seed' | 'switch'; slug?: string };
   if (body.action === 'seed') {
+    // seeding builds a full sample workspace — unauthenticated, so cap it
+    const rl = limit(clientKey(req, 'seed'), 10, 3600);
+    if (!rl.ok) return Response.json({ error: 'Too many workspace seeds — try again later.' }, { status: 429 });
     const slug = body.slug && SEED_ORGS.some((o) => o.slug === body.slug) ? body.slug : 'precision-metalworks';
     const { orgId, counts } = await seedDemoData(slug);
     return Response.json({ ok: true, orgId, counts });

@@ -42,6 +42,7 @@ interface AccuracySummary {
   averagePct: number | null;
   verdict: string;
   worst: AccuracyMiss[];
+  trend: Array<{ weekStart: string; averagePct: number; scored: number }>;
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -495,6 +496,27 @@ export function SettingsClient() {
                   average accuracy · {accuracy.scored} scored week{accuracy.scored > 1 ? 's' : ''}
                 </span>
               </div>
+              {accuracy.trend.length > 1 && (
+                <div>
+                  <p className="mb-1 text-[11px] text-muted-foreground">Week-over-week (projection week → accuracy)</p>
+                  <div className="space-y-1">
+                    {accuracy.trend.slice(-8).map((t) => (
+                      <div key={t.weekStart} className="flex items-center gap-2">
+                        <span className="w-20 shrink-0 font-mono text-[10px] text-muted-foreground">{t.weekStart}</span>
+                        <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full rounded-full ${t.averagePct >= 85 ? 'bg-emerald-500' : t.averagePct >= 60 ? 'bg-amber-500' : 'bg-red-500'}`}
+                            style={{ width: `${Math.max(2, Math.min(100, t.averagePct))}%` }}
+                          />
+                        </div>
+                        <span className="w-20 shrink-0 text-right text-[10px] text-muted-foreground">
+                          {t.averagePct}% · {t.scored} item{t.scored > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {accuracy.worst.length > 0 && (
                 <div className="overflow-hidden rounded-md border">
                   <table className="w-full text-xs">

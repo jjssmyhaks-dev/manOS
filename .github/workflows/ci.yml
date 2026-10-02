@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Deployed URL to smoke-test (e.g. https://your-app.vercel.app). Leave empty to skip the deploy smoke.'
+        required: false
+        default: ''
 
 jobs:
   verify:
@@ -65,3 +71,29 @@ jobs:
           exit $SMOKE_RC
         env:
           FACTORY_DB_MEMORY: '1'
+
+  # Runs the same smoke suite against the LIVE deployment (Vercel Cron / a
+  # real gateway / the WhatsApp webhook all live there — localhost green does
+  # not prove prod answers). Trigger manually from the Actions tab with the
+  # deployed URL, or set DEPLOY_URL as a repo secret to run on every push.
+  # (No job-level `if`: the env/secrets contexts are not available there, so
+  # the skip decision lives in the step.)
+  deploy-smoke:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Smoke the deployed URL
+        env:
+          DISPATCH_URL: ${{ inputs.base_url }}
+          DEPLOY_URL: ${{ secrets.DEPLOY_URL }}
+        run: |
+          URL="${DISPATCH_URL:-$DEPLOY_URL}"
+          if [ -z "$URL" ]; then
+            echo 'No URL (workflow_dispatch input or DEPLOY_URL secret) — deploy smoke skipped.'
+            exit 0
+          fi
+          BASE_URL="$URL" node scripts/smoke.mjs

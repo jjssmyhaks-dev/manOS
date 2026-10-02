@@ -8,7 +8,14 @@ import './env.js';
  * + the digest/pilot-digest sections render the same numbers.
  */
 import { query, seedDemoData } from '@factory/db';
-import { forecastAccuracySummary, generateDigest, generatePilotDigest, pilotDigestText } from '@factory/agents';
+import {
+  forecastAccuracySummary,
+  forecastAccuracyTrend,
+  suggestReorderAdjustments,
+  generateDigest,
+  generatePilotDigest,
+  pilotDigestText,
+} from '@factory/agents';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = '') {
@@ -57,6 +64,22 @@ check('accuracy math per item', !!fRow && Math.abs(fRow.accuracyPct - (1 - Math.
 check('bad projection scores low', !!sRow && sRow.accuracyPct < 40, `${sRow?.accuracyPct}%`);
 check('verdict present', summary.verdict.length > 10, summary.verdict);
 check('worst-first ordering', summary.worst.length >= 2 && summary.worst[0]!.accuracyPct <= summary.worst[summary.worst.length - 1]!.accuracyPct, JSON.stringify(summary.worst.map((w) => w.accuracyPct)));
+
+// trend series: 2 scored rows, same week → one point with the average
+const trend = await forecastAccuracyTrend(orgId);
+check('trend series has the scored week', trend.length === 1 && trend[0]!.scored === 2 && Math.abs(trend[0]!.averagePct - (summary.averagePct ?? -1)) < 0.01, JSON.stringify(trend));
+
+// self-correcting loop: the 33%-accurate item must get a widened safety
+// buffer, and its suggestion 'why' must say so (matched by itemId — seeded
+// item names can repeat)
+const report = await suggestReorderAdjustments(orgId);
+const firstId = realItems[0]!.item_id;
+const accItem = report.suggestions.find((s) => s.itemId === firstId);
+check(
+  'accuracy widens reorder safety (self-correcting)',
+  !!accItem && accItem.why.includes('safety widened'),
+  accItem ? accItem.why : `no suggestion for item ${firstId} (suggestions: ${report.suggestions.length})`
+);
 
 // daily digest carries the section
 const digest = await generateDigest(orgId);

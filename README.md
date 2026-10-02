@@ -75,9 +75,9 @@ Every agent follows the shared pattern — deterministic tools first, LLM only t
 | 8 | Production / Shift | `shift.ts` — voice note → deterministic extraction → clarification if missing → job-card write via policy | ✅ built · eval `shift_report` |
 | 9 | Quality | `quality.ts` + `log_inspection`/`log_defect_ncr` — NCR/CAPA drafts with similar-defect retrieval and 30-day trend escalation | ✅ built · eval `quality_flow` |
 | 10 | Compliance | `einvoice.ts`/`eway.ts` + `compliance.ts` — threshold rule in config, GSP errors → human queue after 3 attempts | ✅ built · evals `einvoicing`, `ewb_validation`, `compliance_threshold` |
-| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval; per-week `forecast_snapshots` scored against actuals (`scoreForecastAccuracy`) | ✅ built · eval `override_rate` covers the trust metric; forecast maths exercised via `runForecastCycle`; snapshot accuracy measured, not assumed |
+| 11 | Demand Forecasting | `mrp.ts` + `forecast.ts` — suggestions flagged (insufficient history / seasonal), batched `update_reorder_points` approval; per-week `forecast_snapshots` scored against actuals (`scoreForecastAccuracy`) | ✅ built · eval `override_rate` covers the trust metric; forecast maths exercised via `runForecastCycle`; **self-correcting**: measured per-item accuracy widens/tightens the reorder safety buffer; accuracy visible in Settings (trend chart), daily + pilot digests |
 | 12 | Customer Service | `customer-service.ts` — order status, complaint tickets, angry-tone human handoff (webhook resolves customer numbers) | ✅ built · eval `customer_service_flow` · self-registration verified live |
-| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed; **P2b telemetry path built**: edge gateway → `POST /api/ingest/machine` → `detectAnomaly` vs per-metric baselines (EWMA-tracked) → `telemetry_anomaly` activity + urgent WhatsApp alert | ✅ built · eval `maintenance_schedule` |
+| 13 | Maintenance | `maintenance.ts` + `check_maintenance`/`draft_maintenance_wo` — calendar PM with explicit `basis:'calendar'`, missing intervals listed; **P2b telemetry path built**: edge gateway → `POST /api/ingest/machine` → `detectAnomaly` vs per-metric baselines (EWMA-tracked) → `telemetry_anomaly` activity + urgent WhatsApp alert → dashboard **Machine health** card (`GET /api/telemetry/machines`); gateway wiring guide at [docs/gateway.md](docs/gateway.md) | ✅ built · eval `maintenance_schedule` |
 
 Scheduled agents (4, 10, 11, 13 + digests/remediation) run inside the nightly cron (`/api/jobs/daily`); the weekly pilot digest (Mondays) reports their outcomes per org. A5/A9/A11/A13 are also conversational tools the orchestrator can call.
 
@@ -191,7 +191,8 @@ with parties, items, orders, invoices, job cards and stock ledger. Approval poli
 - **Sessions**: scrypt password hashes, httpOnly `secure` cookies in production, server-side 30-day sessions, expired-session purge in the nightly cron, stale-session pruning per user after signin.
 - **Fail-soft UI**: route `error.tsx` (retryable), `global-error.tsx` (root-layout crash), `not-found.tsx` — no white screens.
 - **Security headers** (`next.config.ts`): CSP, `X-Frame-Options: DENY`, nosniff, referrer + permissions policy.
-- **Verification before every deploy**: `npm test`, `test:golden`, `test:documents`, `verify:telemetry`, `audit:writes` all gate in CI, then the production build boots and `npm run smoke -w apps/web` runs against it (`BASE_URL=…` for any deploy).
+- **Verification before every deploy**: `npm test`, `test:golden`, `test:documents`, `verify:telemetry`, `verify:forecast-accuracy`, `audit:writes` all gate in CI, then the production build boots and `npm run smoke -w apps/web` runs against it (`BASE_URL=…` for any deploy). A `deploy-smoke` job re-runs the same suite against the **live deployment** — set the `DEPLOY_URL` repo secret for every-push, or trigger manually from the Actions tab with a URL.
+- **Gateway wiring**: operator guide at [docs/gateway.md](docs/gateway.md) — token provisioning, payload/batch format, retry semantics, baselines.
 
 ## Eval suite
 
