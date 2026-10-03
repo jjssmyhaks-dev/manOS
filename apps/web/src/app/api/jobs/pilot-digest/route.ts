@@ -1,5 +1,6 @@
 import { generateAllPilotDigests, pilotDigestText, deliverPilotDigest } from '@factory/agents';
 import { audit, query } from '@factory/db';
+import { getSessionUser } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -20,8 +21,15 @@ async function guard(req: Request): Promise<Response | null> {
   const secret = process.env.CRON_SECRET;
   if (!secret) return null;
   const auth = req.headers.get('authorization');
-  if (auth !== `Bearer ${secret}`) return Response.json({ error: 'unauthorized' }, { status: 401 });
-  return null;
+  if (auth === `Bearer ${secret}`) return null;
+  // the platform operator (OPERATOR_EMAIL) may force a run from the UI
+  // (Cmd+K → "Force pilot digest now") without holding the cron secret
+  const opEmail = process.env.OPERATOR_EMAIL;
+  if (opEmail) {
+    const user = await getSessionUser();
+    if (user?.email && user.email.toLowerCase() === opEmail.toLowerCase()) return null;
+  }
+  return Response.json({ error: 'unauthorized' }, { status: 401 });
 }
 
 const DELIVERY_ENV =

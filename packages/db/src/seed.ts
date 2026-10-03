@@ -335,6 +335,32 @@ export async function seedDemoData(
   );
   counts.telemetryReadings = 7 * 5 * 3 + 1;
 
+  // Trajectory history for the pilot cockpit sparklines: 7 nightly trend
+  // snapshots telling a realistically improving pilot story — override rate
+  // falling, forecast accuracy appearing once the first horizon scores, open
+  // anomalies receding. Real snapshots (recordTrendSnapshot) overwrite today's
+  // row on the next run, so this only fills the past.
+  await query(`delete from trend_snapshots where org_id=$1`, [orgId], db);
+  const trendHistory: Array<{ d: number; o: number; a: number | null; an: number; act: number }> = [
+    { d: 7, o: 15, a: null, an: 3, act: 34 },
+    { d: 6, o: 14, a: null, an: 3, act: 41 },
+    { d: 5, o: 12, a: null, an: 2, act: 46 },
+    { d: 4, o: 11, a: null, an: 2, act: 52 },
+    { d: 3, o: 9, a: 58, an: 2, act: 58 },
+    { d: 2, o: 8, a: 66, an: 1, act: 63 },
+    { d: 1, o: 8, a: 74, an: 1, act: 68 },
+  ];
+  for (const t of trendHistory) {
+    await query(
+      `insert into trend_snapshots (org_id, day, override_pct, forecast_accuracy_pct, anomalies_open, actions_7d)
+       values ($1, current_date - ($2 || ' days')::interval, $3, $4, $5, $6)
+       on conflict (org_id, day) do nothing`,
+      [orgId, String(t.d), t.o, t.a, t.an, t.act],
+      db
+    );
+  }
+  counts.trendSnapshots = trendHistory.length;
+
   // BOMs: first two finished items consume two components each (qty per unit)
   // so the MRP engine can explode parent demand into component buy suggestions
   for (let p = 0; p < 2; p++) {

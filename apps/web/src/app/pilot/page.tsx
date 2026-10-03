@@ -4,6 +4,7 @@ import { query } from '@factory/db';
 import { getSessionUser } from '@/lib/auth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Sparkline } from '@/components/sparkline';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ export interface PilotRowData {
   feedbackDown: number;
   lastDigest: string | null;
   lastDigestAt: string | null;
+  trend: Array<{ day: string; overridePct: number | null; accuracyPct: number | null; anomaliesOpen: number }>;
 }
 
 export default async function PilotDashboardPage() {
@@ -71,6 +73,21 @@ export default async function PilotDashboardPage() {
       `select body, created_at::text from notifications where org_id = $1 and template = 'pilot_digest' order by created_at desc limit 1`,
       [o.id]
     );
+    // nightly trajectory snapshots (oldest → newest, last 14 days)
+    const trendRows = await query<{ day: string; override_pct: string | null; forecast_accuracy_pct: string | null; anomalies_open: string }>(
+      `select to_char(day, 'DD Mon') as day, override_pct::text as override_pct,
+              forecast_accuracy_pct::text as forecast_accuracy_pct, anomalies_open::text as anomalies_open
+       from trend_snapshots where org_id = $1 order by day desc limit 14`,
+      [o.id]
+    );
+    const trend = trendRows
+      .map((t) => ({
+        day: t.day,
+        overridePct: t.override_pct === null ? null : Number(t.override_pct),
+        accuracyPct: t.forecast_accuracy_pct === null ? null : Number(t.forecast_accuracy_pct),
+        anomaliesOpen: Number(t.anomalies_open ?? 0),
+      }))
+      .reverse();
     rows.push({
       orgId: o.id,
       orgName: o.name,
@@ -87,11 +104,31 @@ export default async function PilotDashboardPage() {
       feedbackDown: Number(counts[0]?.down ?? 0),
       lastDigest: digest[0]?.body ?? null,
       lastDigestAt: digest[0]?.created_at ?? null,
+      trend,
     });
   }
 
   const trendBadge = (t: string) =>
     t === 'improving' ? 'success' : t === 'worsening' ? 'destructive' : t === 'flat' ? 'secondary' : 'outline';
+
+  const trendCell = (
+    label: string,
+    values: Array<number | null>,
+    latest: number | null,
+    color: string,
+    suffix: string,
+    goodDirection: 'down' | 'up'
+  ) => (
+    <div className="rounded-md border bg-background px-2 py-1.5">
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{label}</span>
+        <span className={`font-semibold ${latest === null ? '' : goodDirection === 'down' ? 'text-amber-600' : 'text-emerald-600'}`}>
+          {latest === null ? '–' : `${latest}${suffix}`}
+        </span>
+      </div>
+      <Sparkline values={values} stroke={color} fill={color} className="mt-0.5 w-full" />
+    </div>
+  );
 
   return (
     <div className="space-y-4 p-6">
@@ -150,6 +187,23 @@ export default async function PilotDashboardPage() {
                   <div className="text-sm font-semibold text-red-600">{r.feedbackDown}</div>
                   <div className="text-[10px] text-muted-foreground">👎</div>
                 </div>
+              </div>
+
+              <div className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>Trajectory — nightly snapshots{r.trend.length ? ` (last ${r.trend.length} day${r.trend.length > 1 ? 's' : ''})` : ''}</span>
+                </div>
+                {r.trend.length >= 2 ? (
+                  <div className="grid grid-cols-3 gap-2">
+                    {trendCell('override %', r.trend.map((t) => t.overridePct), r.trend.at(-1)?.overridePct ?? null, '#f59e0b', '%', 'down')}
+                    {trendCell('forecast acc %', r.trend.map((t) => t.accuracyPct), r.trend.at(-1)?.accuracyPct ?? null, '#10b981', '%', 'up')}
+                    {trendCell('open anomalies', r.trend.map((t) => t.anomaliesOpen), r.trend.at(-1)?.anomaliesOpen ?? null, '#ef4444', '', 'down')}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    No trend data yet — snapshots start with the first nightly run and build a 2-week picture.
+                  </p>
+                )}
               </div>
 
               <div className="rounded-md border bg-muted/30 px-3 py-2">

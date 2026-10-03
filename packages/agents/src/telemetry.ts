@@ -210,20 +210,28 @@ export async function setAlertStatus(
   status: 'acked' | 'resolved',
   opts: { byUser?: string; note?: string } = {}
 ): Promise<{ ok: boolean; error?: string }> {
-  const rows = await query<{ id: string; summary: string }>(
-    `select id, summary from agent_actions where org_id=$1 and id=$2 and action_type='telemetry_anomaly' limit 1`,
+  const rows = await query<{ id: string; summary: string; cur: string | null }>(
+    `select a.id, a.summary, s.status as cur from agent_actions a
+     left join telemetry_alert_acks s on s.alert_id = a.id
+     where a.org_id=$1 and a.id=$2 and a.action_type='telemetry_anomaly' limit 1`,
     [orgId, alertId]
   );
   const alert = rows[0];
   if (!alert) return { ok: false, error: 'alert not found' };
+  // lifecycle is append-only: a resolved alert cannot go back to acked/open
+  if (alert.cur === 'resolved') return { ok: false, error: 'alert already resolved' };
   await query(
     `insert into telemetry_alert_acks (alert_id, org_id, status, by_user, note) values ($1,$2,$3,$4,$5)
      on conflict (alert_id) do update set status = $3, by_user = $4, note = $5, created_at = now()`,
     [alertId, orgId, status, opts.byUser ?? null, opts.note ?? null]
   );
   await query(
-    `update agent_actions set status = $3 where org_id=$1 and id=$2`,
-    [orgId, alertId, status === 'resolved' ? 'closed' : 'executed']
+    `update agent_actions set status = $3,
+       summary = case when $3 = 'closed' and $4::text is not null
+                      then coalesce(summary, '') || ' — fixed: ' || $4
+                      else summary end
+     where org_id=$1 and id=$2`,
+    [orgId, alertId, status === 'resolved' ? 'closed' : 'executed', opts.note ?? null]
   );
   await audit(orgId, 'user', status === 'resolved' ? 'telemetry.alert_resolved' : 'telemetry.alert_acked', {
     metadata: { alert: alertId, by: opts.byUser ?? null, note: opts.note ?? null },
@@ -257,6 +265,8 @@ export interface AnomalyFeedRow {
   deviationPct: number;
   at: string;
   status: 'open' | 'acked' | 'resolved';
+  note: string | null;
+  by: string | null;
 }
 
 export interface MachineHealthSnapshot {
@@ -299,11 +309,11 @@ export async function machineHealthSnapshot(orgId: string): Promise<MachineHealt
   // alert feed with lifecycle status: open (new), acked (maintenance has
   // eyes on it), resolved (closed) — status lives in telemetry_alert_acks
   const feed = await query<{
-    id: string; machine: string; metric: string; value: string; deviation: string; at: string; status: string | null;
+    id: string; machine: string; metric: string; value: string; deviation: string; at: string; status: string | null; note: string | null; by_user: string | null;
   }>(
     `select a.id, a.metadata->>'machine' as machine, a.metadata->>'metric' as metric,
             (a.metadata->>'value')::text as value, (a.metadata->>'deviationPct')::text as deviation,
-            to_char(a.created_at, 'YYYY-MM-DD HH24:MI') as at, s.status
+            to_char(a.created_at, 'YYYY-MM-DD HH24:MI') as at, s.status, s.note, s.by_user
      from agent_actions a
      left join telemetry_alert_acks s on s.alert_id = a.id
      where a.org_id=$1 and a.action_type='telemetry_anomaly' and a.status != 'undone'
@@ -318,6 +328,8 @@ export async function machineHealthSnapshot(orgId: string): Promise<MachineHealt
     deviationPct: Number(r.deviation ?? 0),
     at: r.at,
     status: r.status === 'resolved' ? 'resolved' : r.status === 'acked' ? 'acked' : 'open',
+    note: r.note,
+    by: r.by_user,
   }));
   const lastReadingAt = readings.length
     ? readings.map((r) => r.last_at).sort().at(-1) ?? null

@@ -106,8 +106,17 @@ const res = await setAlertStatus(orgId, alertId, 'resolved', { byUser: 'maintena
 check('resolve accepted', res.ok, JSON.stringify(res));
 const afterRes = (await machineHealthSnapshot(orgId)).anomalies7d.find((a) => a.id === alertId);
 check('resolve reflected + no longer open', afterRes?.status === 'resolved', `status=${afterRes?.status}`);
-const closed = await query<{ st: string }>(`select status as st from agent_actions where id=$1`, [alertId]);
+check('resolve note surfaced in feed', afterRes?.note === 'bearing replaced' && afterRes?.by === 'maintenance@factory.in', JSON.stringify(afterRes));
+const closed = await query<{ st: string; summary: string }>(`select status as st, summary from agent_actions where id=$1`, [alertId]);
 check('agent_actions status closed', closed[0]?.st === 'closed', `status=${closed[0]?.st}`);
+check('fix note on the activity timeline (summary)', (closed[0]?.summary ?? '').includes('fixed: bearing replaced'), closed[0]?.summary);
+const noteAudit = await query<{ n: string }>(
+  `select count(*)::text as n from audit_log where org_id=$1 and action='telemetry.alert_resolved' and metadata->>'note'='bearing replaced'`,
+  [orgId]
+);
+check('fix note on the audit trail', noteAudit[0]?.n === '1', `audit rows=${noteAudit[0]?.n}`);
+const ackToo = await setAlertStatus(orgId, alertId, 'acked');
+check('re-ack after resolve refused (append-only lifecycle)', !ackToo.ok && ackToo.error === 'alert already resolved', JSON.stringify(ackToo));
 const unknown = await setAlertStatus(orgId, '00000000-0000-0000-0000-000000000000', 'acked');
 check('unknown alert rejected', !unknown.ok && unknown.error === 'alert not found', JSON.stringify(unknown));
 

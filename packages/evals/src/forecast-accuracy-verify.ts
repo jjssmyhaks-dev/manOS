@@ -108,7 +108,12 @@ check('trend snapshot recorded', traj.length >= 1, JSON.stringify(traj));
 await recordTrendSnapshot(orgId); // same-day re-run must not duplicate
 const traj2 = await trendTrajectory(orgId);
 check('trend snapshot idempotent per day', traj2.length === traj.length, `rows=${traj2.length}`);
-check('trajectory text empty for a single day', trendTrajectoryText(traj2) === '', trendTrajectoryText(traj2));
+// single-day guard: the demo seed ships a 7-day trajectory, so wipe it and
+// record exactly one day — the WhatsApp text must stay silent (no fake trend)
+await query(`delete from trend_snapshots where org_id=$1`, [orgId]);
+await recordTrendSnapshot(orgId);
+const traj1 = await trendTrajectory(orgId);
+check('trajectory text empty for a single day', trendTrajectoryText(traj1) === '', trendTrajectoryText(traj1));
 
 console.log(`\n${failures ? `FORECAST-ACCURACY VERIFY FAILED: ${failures} check(s)` : 'Forecast-accuracy surfaces verified.'}`);
 process.exit(failures ? 1 : 0);
